@@ -1,19 +1,28 @@
 //! Darwin PTY spawning without running any code between fork and exec.
 //!
-//! Shared with makepad-agents by source path so its tiny host stays GUI-free.
+//! Shared with makepad-screen by source path so its tiny host stays GUI-free.
 //! Darwin's opaque spawn types/flags are defined by the SDK's spawn.h.
-use std::{
-    collections::BTreeMap,
-    ffi::{c_char, c_void, CString, OsString},
-    fs::File,
-    io::{self, Read, Write},
-    os::fd::{AsRawFd, FromRawFd},
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::ExitStatusExt},
-    path::{Path, PathBuf},
-    process::{Command, ExitStatus},
-    ptr,
-    time::{Duration, Instant},
-};
+use std::collections::BTreeMap;
+use std::ffi::c_char;
+use std::ffi::c_void;
+use std::ffi::CString;
+use std::ffi::OsString;
+use std::fs::File;
+use std::io;
+use std::io::Read;
+use std::io::Write;
+use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
+use std::process::ExitStatus;
+use std::ptr;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
 
 pub struct Child {
     pid: i32,
@@ -117,17 +126,7 @@ pub fn screen_helper() -> io::Result<PathBuf> {
     } else {
         directory
     };
-    let helper = directory.join("agents");
-    if !helper.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "the pty helper {} is not built; build it with the same profile: cargo build -p makepad-agents",
-                helper.display()
-            ),
-        ));
-    }
-    Ok(helper)
+    Ok(directory.join("makepad-screen"))
 }
 
 /// Start a new session with `slave` as its controlling terminal and stdio.
@@ -333,7 +332,7 @@ fn wait_for_exec(pipe: &mut File) -> io::Result<()> {
     }
 }
 
-/// Called at makepad-agents entry, before any host, socket, worker or UI.
+/// Called at makepad-screen entry, before any host, socket, worker or UI.
 /// Returns for ordinary invocations; exec mode never returns.
 pub fn exec_helper() {
     let mut arguments = std::env::args_os().skip(1);

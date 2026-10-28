@@ -86,14 +86,24 @@ pub fn format_value_brief(heap: &ScriptHeap, value: ScriptValue) -> String {
 
     // Handle inline strings
     if let Some(s) = value.as_inline_string(|s| s.to_string()) {
-        return format!("\"{}\"", truncate_preview(&s, 12));
+        let truncated = if s.len() > 12 {
+            format!("{}...", &s[..12])
+        } else {
+            s
+        };
+        return format!("\"{}\"", truncated);
     }
 
     // Handle heap strings
     if let Some(s) = value.as_string() {
         if let Some(str_data) = &heap.strings[s] {
             let s = &str_data.string.0;
-            return format!("\"{}\"", truncate_preview(s, 12));
+            let truncated = if s.len() > 12 {
+                format!("{}...", &s[..12])
+            } else {
+                s.to_string()
+            };
+            return format!("\"{}\"", truncated);
         }
         return "\"\"".to_string();
     }
@@ -137,16 +147,6 @@ pub fn format_value_brief(heap: &ScriptHeap, value: ScriptValue) -> String {
 
     // Fallback
     format!("{:?}", value.value_type())
-}
-
-/// Truncate a string preview at a character boundary. A fixed byte slice
-/// panics when a multibyte character crosses the cut while formatting an
-/// otherwise recoverable script error.
-fn truncate_preview(value: &str, maximum_characters: usize) -> String {
-    let Some((end, _)) = value.char_indices().nth(maximum_characters) else {
-        return value.to_owned();
-    };
-    format!("{}...", &value[..end])
 }
 
 /// Format the type of a ScriptValue as a human-readable string for error messages.
@@ -678,20 +678,5 @@ pub fn suggest_pod_field(heap: &ScriptHeap, pod_ty: ScriptPodType, field: LiveId
             suggest_from_iter(&key_str, components.into_iter())
         }
         _ => String::new(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::truncate_preview;
-
-    #[test]
-    fn preview_truncation_preserves_utf8_boundaries() {
-        let value = "abcdefghijk\u{057e}";
-        assert_eq!(truncate_preview(value, 12), value);
-        assert_eq!(
-            truncate_preview(&format!("{value}z"), 12),
-            format!("{value}...")
-        );
     }
 }

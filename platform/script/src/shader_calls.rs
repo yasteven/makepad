@@ -558,7 +558,7 @@ impl ShaderFnCompiler {
         fnobj: ScriptObject,
         sself: ShaderType,
         args: Vec<ShaderType>,
-    ) -> (ScriptPodType, String, Option<usize>) {
+    ) -> (ScriptPodType, String) {
         let mut method_name_prefix = String::new();
         if let ShaderType::PodType(ty) = sself {
             if let Some(name) = vm.bx.heap.pod_type_name(ty) {
@@ -571,16 +571,8 @@ impl ShaderFnCompiler {
         } else if let ShaderType::IoSelf(_) = sself {
             write!(method_name_prefix, "io_").ok();
         } else if let ShaderType::ScopeObject(obj) = sself {
-            // A prefix unique within this shader and stable across module
-            // re-evaluation: the object's place in the order of first use.
-            let at = match output.scope_prefixes.iter().position(|&i| i == obj.index as usize) {
-                Some(at) => at,
-                None => {
-                    output.scope_prefixes.push(obj.index as usize);
-                    output.scope_prefixes.len() - 1
-                }
-            };
-            write!(method_name_prefix, "scope{}_", at).ok();
+            // Use the object index to create a unique prefix for scope object methods
+            write!(method_name_prefix, "scope{}_", obj.index).ok();
         }
 
         // First pass: resolve AbstractInt/AbstractFloat against declared parameter types
@@ -647,11 +639,10 @@ impl ShaderFnCompiler {
         }
 
         // lets see if we already have fnobj with our argstypes
-        if let Some((index, fun)) = output
+        if let Some(fun) = output
             .functions
             .iter()
-            .enumerate()
-            .find(|(_, v)| v.fnobj == fnobj && v.args == resolved_args)
+            .find(|v| v.fnobj == fnobj && v.args == resolved_args)
         {
             let mut fn_name_base = String::new();
             if fun.overload != 0 {
@@ -666,7 +657,7 @@ impl ShaderFnCompiler {
             }
             let mut fn_name = output.backend.map_function_name(&fn_name_base);
             write!(fn_name, "(").ok(); // Add opening paren to match new function path
-            return (fun.ret, fn_name, Some(index));
+            return (fun.ret, fn_name);
         }
 
         let overload = output.functions.iter().filter(|v| v.name == name).count();
@@ -832,7 +823,7 @@ impl ShaderFnCompiler {
                         name
                     ));
                     script_err_not_allowed!(trap, "shader functions cannot recurse");
-                    (vm.bx.code.builtins.pod.pod_void, fn_name, None)
+                    (vm.bx.code.builtins.pod.pod_void, fn_name)
                 } else {
                     output.recur_block.push(fnobj);
                     let ret = compiler.compile_fn(vm, output, fnip);
@@ -876,7 +867,6 @@ impl ShaderFnCompiler {
                         }
                     }
 
-                    let index = output.functions.len();
                     output.functions.push(ShaderFn {
                         overload,
                         call_sig,
@@ -884,11 +874,10 @@ impl ShaderFnCompiler {
                         args: resolved_args,
                         fnobj,
                         out: compiler.out,
-                        callees: compiler.callees,
                         ret,
                     });
                     write!(fn_name, "(").ok();
-                    (ret, fn_name, Some(index))
+                    (ret, fn_name)
                 }
             } else {
                 panic!()
@@ -913,11 +902,8 @@ impl ShaderFnCompiler {
         let arg_types = args.clone();
         let resolved_arg_types =
             Self::resolve_script_call_arg_types(vm, fnobj, &arg_types, self.trap.pass());
-        let (ret, fn_name, callee) =
+        let (ret, fn_name) =
             Self::compile_shader_def(vm, output, self.trap.pass(), name, fnobj, sself, args);
-        if let Some(callee) = callee {
-            self.callees.push(callee);
-        }
         if matches!(output.backend, ShaderBackend::Glsl | ShaderBackend::Rust) {
             out = Self::glsl_rewrite_call_args(vm, &out, &arg_types, &resolved_arg_types);
         }

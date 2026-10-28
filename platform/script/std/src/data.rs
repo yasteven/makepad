@@ -6,7 +6,6 @@ use std::sync::Arc;
 pub struct ScriptStd {
     pub net: Option<Arc<NetworkRuntime>>,
     pub data: ScriptData,
-    host_io_only: bool,
 }
 
 impl ScriptStd {
@@ -18,27 +17,11 @@ impl ScriptStd {
         Self {
             net: Some(net),
             data: ScriptData::default(),
-            host_io_only: false,
         }
     }
 
     pub fn set_network_runtime(&mut self, net: Arc<NetworkRuntime>) {
-        if !self.host_io_only {
-            self.net = Some(net);
-        }
-    }
-
-    /// Restrict a fresh script context to host-mediated external I/O.
-    ///
-    /// This cannot be relaxed by script code. Call before evaluating guest code;
-    /// callers must not transfer existing network/process handles into the context.
-    pub fn restrict_to_host_io(&mut self) {
-        self.net = None;
-        self.host_io_only = true;
-    }
-
-    pub fn host_io_only(&self) -> bool {
-        self.host_io_only
+        self.net = Some(net);
     }
 }
 

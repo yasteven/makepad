@@ -19,15 +19,12 @@ required-features = ["standalone"]
 
 [features]
 dynamic-module = []
-default = ["tweaker", "standalone"]
-# The design overlay (Shift+F10 with the dev overlays on). On for development
-# builds; the Builder's releases build without it (--no-default-features).
-tweaker = ["makepad-widgets/tweaker"]
+default = ["standalone"]
 # The standalone window (src/main.rs); a host that links the module leaves it off.
 standalone = []
 
 [dependencies]
-makepad-widgets = { path = "../../widgets", default-features = false, features = ["rich_text", "glass"] }
+makepad-widgets = { path = "../../widgets" }
 makepad-wm-theme = { path = "../../libs/wm_theme" }
 makepad-ai-services = { path = "../../libs/ai/services" }
 makepad-app-module = { path = "../../libs/app_module" }
@@ -43,8 +40,3 @@ makepad-html = { path = "../../libs/html" }
 name = "mail-index"
 path = "src/index_main.rs"
 required-features = ["standalone"]
-
-[package.metadata.makepad.desktop]
-name = "Makepad Mail"
-identifier = "nl.makepad.mail"
-icon = "resources/mail-icon.png"

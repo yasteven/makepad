@@ -3211,15 +3211,9 @@ impl Widget for TreemapView {
                     self.drag = Some(drag);
                 }
             }
-            Hit::FingerUp(fe) => {
+            Hit::FingerUp(_) => {
                 if let Some(drag) = self.drag.take() {
-                    if fe.cancelled {
-                        // Another owner took the gesture: no pick and no
-                        // context menu; a moved camera still settles.
-                        if drag.moved {
-                            self.settle(cx);
-                        }
-                    } else if !drag.moved {
+                    if !drag.moved {
                         self.press(cx, drag.from, drag.taps, !drag.secondary);
                         if drag.secondary {
                             // A clean secondary click: the context menu's

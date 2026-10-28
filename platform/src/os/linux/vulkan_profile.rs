@@ -7,7 +7,7 @@ use crate::draw_pass::DrawPassId;
 use ash::vk;
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::time::Instant;
+use crate::sols_browser_time::Instant;
 
 const QUERY_SLOTS: u32 = 2;
 const MAX_PASS_KEYS: usize = 256;

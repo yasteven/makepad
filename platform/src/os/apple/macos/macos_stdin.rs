@@ -62,8 +62,8 @@ pub(crate) fn stdin_trace(line: &str) {
             .open(dir.join("stdin.log"))
             .ok();
     }
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let ms = crate::sols_browser_time::SystemTime::now()
+        .duration_since(crate::sols_browser_time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0);
     if let Some(f) = file.as_mut() {
@@ -88,16 +88,15 @@ impl Cx {
         &mut self,
         metal_cx: &mut MetalCx,
         stdin_windows: &mut [StdinWindow],
-        time: f64,
+        time: f32,
     ) {
         //self.demo_time_repaint = false;
         let mut passes_todo = Vec::new();
         self.compute_pass_repaint_order(&mut passes_todo);
         self.repaint_id += 1;
-        let pass_time = self.pass_time(time);
         for &draw_pass_id in &passes_todo {
             let uniforms_gen = self.next_uniform_gen();
-            self.passes[draw_pass_id].set_time(pass_time, uniforms_gen);
+            self.passes[draw_pass_id].set_time(time as f32, uniforms_gen);
             match self.passes[draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {}
                 CxDrawPassParent::Window(window_id) => {
@@ -154,10 +153,8 @@ impl Cx {
         self.set_physical_keyboard_state(true);
         self.call_event_handler(&Event::Startup);
         Self::stdin_send_to_host(AppToStudio::AfterStartup);
-        // What this child's pointer input understands (see HostedPointerCaps).
-        Self::stdin_send_to_host(AppToStudio::Custom(crate::ime::HostedPointerCaps::current().to_json()));
 
-        let mut last_recv: Option<std::time::Instant> = None;
+        let mut last_recv: Option<crate::sols_browser_time::Instant> = None;
         loop {
             if !Self::has_studio_web_socket() {
                 crate::error!("--stdin-loop mode requires a studio websocket");
@@ -175,7 +172,7 @@ impl Cx {
                     stdin_trace(&format!("rxgap {:.1}", gap));
                 }
             }
-            last_recv = Some(std::time::Instant::now());
+            last_recv = Some(crate::sols_browser_time::Instant::now());
             crate::memory_watchdog::note_stdin_host_message();
 
             match incoming {
@@ -281,7 +278,7 @@ impl Cx {
                 };
                 self.call_event_handler(&Event::TweakRay(tweak_ray));
             }
-            StudioToApp::MouseUp(ref e) | StudioToApp::MouseCancel(ref e) => {
+            StudioToApp::MouseUp(ref e) => {
                 let (window_id, pos) = if let Some((_, window_id)) = self.fingers.first_mouse_button
                 {
                     (window_id, self.windows[window_id].window_geom.position)
@@ -400,16 +397,16 @@ impl Cx {
                 }
                 let drew = self.need_redrawing();
                 if drew {
-                    let t0 = std::time::Instant::now();
+                    let t0 = crate::sols_browser_time::Instant::now();
                     self.call_draw_event(time_now);
                     self.mtl_compile_shaders(metal_cx);
                     stdin_trace(&format!("draw {:.1}", t0.elapsed().as_secs_f64() * 1000.0));
                 }
-                let t0 = std::time::Instant::now();
+                let t0 = crate::sols_browser_time::Instant::now();
                 self.stdin_handle_repaint(
                     metal_cx,
                     stdin_windows,
-                    self.os.stdin_timers.time_now(),
+                    self.os.stdin_timers.time_now() as f32,
                 );
                 if drew {
                     stdin_trace(&format!(
@@ -419,7 +416,7 @@ impl Cx {
                 }
 
                 let gc_start = self.seconds_since_app_start();
-                let gc_t0 = std::time::Instant::now();
+                let gc_t0 = crate::sols_browser_time::Instant::now();
                 let mut gc_heap_live = None;
                 self.with_vm(|vm| {
                     if vm.heap().needs_gc() {

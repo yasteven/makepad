@@ -148,12 +148,14 @@ impl StoreId {
 
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
-        // Keep fetch_update for older stable toolchains without try_update.
-        #[allow(deprecated)]
-        let id = NEXT_ID
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |id| id.checked_add(1))
-            .unwrap();
-        Self(id)
+        let mut id = NEXT_ID.load(Ordering::SeqCst);
+        loop {
+            let next = id.checked_add(1).expect("store ID exhausted");
+            match NEXT_ID.compare_exchange_weak(id, next, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(previous) => return Self(previous),
+                Err(current) => id = current,
+            }
+        }
     }
 }
 

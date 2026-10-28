@@ -18,17 +18,12 @@ public class MakepadNative {
     public native static void initChoreographer(float deviceRefreshRate, int sdkVersion);
 
     public native static void onBackPressed();
-    public native static void onBackGesture(int state, float touchX, float touchY, float progress, int edge, long timeMillis);
 
     // belongs to QuadSurface class
     public native static void surfaceOnSurfaceCreated(Surface surface);
     public native static void surfaceOnSurfaceDestroyed(Surface surface);
     public static native void surfaceOnLongClick(float x, float y, int pointerId, long timeMillis);
     public static native void surfaceOnTouch(MotionEvent event);
-    // A move's batched samples, oldest first (`historyIndex`), and then the
-    // event itself, each with its time in nanoseconds (uptime clock).
-    public static native void surfaceOnTouchHistory(MotionEvent event, int historyIndex, long timeNanos);
-    public static native void surfaceOnTouchNanos(MotionEvent event, long timeNanos);
     public native static void surfaceOnSurfaceChanged(Surface surface, int width, int height);
     public native static void surfaceOnKeyDown(int keycode, int meta_state, boolean is_repeat);
     public native static void surfaceOnKeyUp(int keycode, int meta_state);

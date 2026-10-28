@@ -80,7 +80,6 @@ impl RegexFlags {
             dot_all: self.dot_all,
             ignore_case: self.ignore_case,
             multiline: self.multiline,
-            ascii_word_boundary: false,
         }
     }
 }

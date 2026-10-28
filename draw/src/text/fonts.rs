@@ -45,11 +45,20 @@ fn default_slug_new_glyphs_per_redraw(cx: &Cx) -> usize {
 }
 
 fn default_slug_min_dpxs_per_em(cx: &Cx, rasterizer: &Rasterizer) -> f32 {
-    match cx.os_type() {
-        OsType::LinuxWindow(_) | OsType::LinuxDirect | OsType::Windows => {
-            rasterizer.msdf_resolution().max_dpxs_per_em
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (cx, rasterizer);
+        crate::makepad_platform::log!("SOLS WASM text renderer: glyph atlas");
+        f32::INFINITY
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match cx.os_type() {
+            OsType::LinuxWindow(_) | OsType::LinuxDirect | OsType::Windows => {
+                rasterizer.msdf_resolution().max_dpxs_per_em
+            }
+            _ => 0.0,
         }
-        _ => 0.0,
     }
 }
 
@@ -62,7 +71,6 @@ pub struct FontsMemoryBytes {
 pub struct Fonts {
     layouter: Layouter,
     lazy_font_requests: LazyFontRequests,
-    missing_font_paths: FxHashSet<String>,
     needs_prepare_atlases: bool,
     atlas_texture: Texture,
     slug_atlas: SlugAtlas,
@@ -72,12 +80,6 @@ pub struct Fonts {
     slug_built_glyphs_this_redraw: usize,
     msdf_job_sender: FromUISender<QueuedMsdfJob>,
     msdf_result_receiver: ToUIReceiver<CompletedMsdfJob>,
-    /// Fonts whose resource this process could not read (see
-    /// [`Self::note_font_unavailable`]); their families render without them
-    /// until the resource registry moves on (`unavailable_generation`).
-    unavailable_fonts: FxHashSet<FontId>,
-    /// The `Cx::script_resource_generation` the set was built under.
-    unavailable_generation: u64,
 }
 
 impl Fonts {
@@ -125,7 +127,6 @@ impl Fonts {
         Self {
             layouter,
             lazy_font_requests: Default::default(),
-            missing_font_paths: FxHashSet::default(),
             needs_prepare_atlases: false,
             atlas_texture: Texture::new_with_format(
                 cx,
@@ -143,8 +144,6 @@ impl Fonts {
             slug_built_glyphs_this_redraw: 0,
             msdf_job_sender,
             msdf_result_receiver,
-            unavailable_fonts: FxHashSet::default(),
-            unavailable_generation: 0,
         }
     }
 
@@ -292,34 +291,8 @@ impl Fonts {
             .unwrap_or(false)
     }
 
-    /// Records that `id`'s resource could not be read; true the first time,
-    /// so the caller can say so once. The family drops the member instead
-    /// of asking for it again every frame.
-    pub fn note_font_unavailable(&mut self, id: FontId) -> bool {
-        self.unavailable_fonts.insert(id)
-    }
-
-    /// A resource was registered or loaded since the unavailable set was
-    /// built: forget it, so the missing members are asked for once more
-    /// (a font file provisioned later, a resource registered again).
-    pub fn sync_unavailable_fonts(&mut self, resource_generation: u64) {
-        if self.unavailable_generation != resource_generation {
-            self.unavailable_generation = resource_generation;
-            self.unavailable_fonts.clear();
-        }
-    }
-
-    pub fn is_font_unavailable(&self, id: FontId) -> bool {
-        self.unavailable_fonts.contains(&id)
-    }
-
     pub fn is_font_known(&self, id: FontId) -> bool {
         self.layouter.is_font_known(id)
-    }
-
-    /// True the first time a resource path fails to load, so the error logs once.
-    pub fn note_missing_font(&mut self, resource_path: &str) -> bool {
-        self.missing_font_paths.insert(resource_path.to_string())
     }
 
     pub fn define_font_family(&mut self, id: FontFamilyId, definition: FontFamilyDefinition) {

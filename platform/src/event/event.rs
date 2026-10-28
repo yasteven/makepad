@@ -13,7 +13,6 @@ use {
         },
         //makepad_live_compiler::LiveEditEvent,
         makepad_live_id::LiveId,
-        makepad_math::Vec2Index,
         makepad_script::*,
         midi::MidiPortsEvent,
         permission::PermissionResult,
@@ -196,12 +195,6 @@ pub enum Event {
     /// Do not match upon or handle this event directly; instead, use the family of
     /// `hit` functions ([`Event::hits()`]) and handle the returned [`Hit`].
     TouchUpdate(TouchUpdateEvent),
-    /// A press taken away before it lifted (see [`FingerCancelEvent`]):
-    /// dispatched by the owner of a claimed gesture to its children, or by
-    /// a host that cancels a finger. Handle it through `hits()`, which
-    /// turns it into the capture's terminal `Hit::FingerUp` with
-    /// `cancelled: true`.
-    FingerCancel(FingerCancelEvent),
     /// The raw event that occurs when the user finishes a long press touch/click.
     ///
     /// Do not match upon or handle this event directly; instead, use the family of
@@ -277,9 +270,6 @@ pub enum Event {
     BackPressed {
         handled: Cell<bool>,
     },
-    /// The system back gesture while the user is still making it (Android's predictive back, API 34+).
-    /// If they complete it, an `Event::BackPressed` follows; otherwise it ends with a `Cancel`.
-    BackGesture(BackGestureEvent),
 
     /// Permission check or request result
     PermissionResult(PermissionResult),
@@ -332,7 +322,6 @@ impl Event {
             59 => "TweakRay",
             22 => "MouseUp",
             23 => "TouchUpdate",
-            75 => "FingerCancel",
             24 => "LongPress",
             25 => "Scroll",
             74 => "Pinch",
@@ -375,7 +364,6 @@ impl Event {
             51 => "MouseLeave",
             52 => "Actions",
             53 => "BackPressed",
-            76 => "BackGesture",
             54 => "PermissionResult",
 
             #[cfg(target_arch = "wasm32")]
@@ -427,7 +415,6 @@ impl Event {
             Self::TweakRay(_) => 59,
             Self::MouseUp(_) => 22,
             Self::TouchUpdate(_) => 23,
-            Self::FingerCancel(_) => 75,
             Self::LongPress(_) => 24,
             Self::Scroll(_) => 25,
             Self::Pinch(_) => 74,
@@ -472,7 +459,6 @@ impl Event {
             Self::MouseLeave(_) => 51,
             Self::Actions(_) => 52,
             Self::BackPressed { .. } => 53,
-            Self::BackGesture(_) => 76,
             Self::PermissionResult(_) => 54,
             Self::LocationUpdate(_) => 69,
             Self::LocationError(_) => 70,
@@ -498,38 +484,6 @@ impl Event {
             }
         }
         false
-    }
-
-    /// Whether a scroll view already moved by this [`Scroll`](Self::Scroll)
-    /// event's delta along `axis`. Always `false` for any other event.
-    ///
-    /// A scroll event reaches the widgets nearest the pointer first and the
-    /// scroll views around them after, so a scroll view that checks this
-    /// before applying a delta leaves alone a wheel an inner one has used.
-    pub fn scroll_handled(&self, axis: Vec2Index) -> bool {
-        match self {
-            Self::Scroll(e) => match axis {
-                Vec2Index::X => e.handled_x.get(),
-                Vec2Index::Y => e.handled_y.get(),
-            },
-            _ => false,
-        }
-    }
-
-    /// Marks this [`Scroll`](Self::Scroll) event's delta along `axis` as used,
-    /// so the scroll views around the caller leave it alone.
-    ///
-    /// Call it only after moving by the delta. A scroll view pinned at the
-    /// edge the delta points past leaves the delta for the views around it,
-    /// the way a `ScrollBar` at its limit does. Does nothing for any other
-    /// event.
-    pub fn set_scroll_handled(&self, axis: Vec2Index) {
-        if let Self::Scroll(e) = self {
-            match axis {
-                Vec2Index::X => e.handled_x.set(true),
-                Vec2Index::Y => e.handled_y.set(true),
-            }
-        }
     }
 }
 
@@ -560,33 +514,6 @@ impl QuitRequestedEvent {
     pub fn handle(&self) {
         self.handled.set(true);
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct BackGestureEvent {
-    pub state: BackGestureState,
-    /// Where the finger is, or `None` if this gesture doesn't come from a touch (e.g. a held back button).
-    pub abs: Option<crate::makepad_math::Vec2d>,
-    /// How far along the system thinks the gesture is, from 0 to 1.
-    pub progress: f64,
-    /// Which screen edge the gesture started from.
-    pub edge: BackGestureEdge,
-    /// Seconds, on the same clock as this platform's touch times.
-    pub time: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BackGestureState {
-    Start,
-    Move,
-    Cancel,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BackGestureEdge {
-    Left,
-    Right,
-    None,
 }
 
 #[derive(Debug)]
@@ -633,8 +560,7 @@ impl Event {
             | Self::TouchUpdate(_)
             | Self::Scroll(_)
             | Self::Pinch(_)
-            | Self::BackPressed { .. }
-            | Self::BackGesture(_) => true,
+            | Self::BackPressed { .. } => true,
             Self::KeyDown(key) | Self::KeyUp(key) if key.key_code == KeyCode::Escape => true,
             _ => false,
         }

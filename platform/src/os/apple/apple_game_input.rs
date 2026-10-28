@@ -306,7 +306,7 @@ unsafe extern "C" {
 struct AppleHapticChannel {
     engine: ObjcId,
     ready: Arc<AtomicBool>,
-    players: Vec<(ObjcId, std::time::Instant)>,
+    players: Vec<(ObjcId, crate::sols_browser_time::Instant)>,
 }
 
 #[cfg(target_os = "macos")]
@@ -328,7 +328,7 @@ impl AppleHapticChannel {
     }
 
     unsafe fn pulse(&mut self, intensity: f32, sharpness: f32, duration_s: f32) -> bool {
-        let now = std::time::Instant::now();
+        let now = crate::sols_browser_time::Instant::now();
         self.players.retain(|(player, until)| {
             if *until > now {
                 true

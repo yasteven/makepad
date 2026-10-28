@@ -58,8 +58,7 @@ impl<'a> ScriptVm<'a> {
         if let Some(ret) = call.return_ip {
             self.bx.threads.cur().trap.ip = ret;
             self.bx.threads.cur().push_stack_unchecked(value);
-            if !self.bx.threads.cur_ref().has_execution_limit_exceeded() && call.args.is_pop_to_me()
-            {
+            if call.args.is_pop_to_me() {
                 self.pop_to_me();
             }
         } else {
@@ -86,9 +85,7 @@ impl<'a> ScriptVm<'a> {
             if let Some(ret) = call.return_ip {
                 self.bx.threads.cur().trap.ip = ret;
                 self.bx.threads.cur().push_stack_unchecked(value);
-                if !self.bx.threads.cur_ref().has_execution_limit_exceeded()
-                    && call.args.is_pop_to_me()
-                {
+                if call.args.is_pop_to_me() {
                     self.pop_to_me();
                 }
             } else {
@@ -326,10 +323,7 @@ impl<'a> ScriptVm<'a> {
     }
 
     pub(crate) fn handle_ok_end(&mut self) {
-        if self.bx.threads.cur().tries.pop().is_none() {
-            self.bail("tries empty in handle_ok_end");
-            return;
-        }
+        self.bx.threads.cur().tries.pop();
         self.bx.threads.cur().trap.goto_next();
     }
 
@@ -350,11 +344,7 @@ impl<'a> ScriptVm<'a> {
             self.bail("tries empty in handle_try_err");
             return;
         }
-        // The parser encodes the success-path distance directly, including
-        // the extra skip over TRY_OK only when a legacy `ok` branch exists.
-        // An unconditional +1 here skipped the enclosing opcode (e.g. LET)
-        // whenever there was no `ok` branch.
-        self.bx.threads.cur().trap.goto_rel(opargs.to_u32());
+        self.bx.threads.cur().trap.goto_rel(opargs.to_u32() + 1);
     }
 
     pub(crate) fn handle_try_ok(&mut self, opargs: OpcodeArgs) {

@@ -83,15 +83,6 @@ mod native {
         }
     }
 
-    /// Nothing drains the pipe once the worker is gone, so hand the three
-    /// signals back to the kernel rather than leave the process unkillable.
-    fn restore_defaults() {
-        const SIG_DFL: usize = 0;
-        for number in SIGNALS {
-            unsafe { signal(number, SIG_DFL) };
-        }
-    }
-
     pub(super) fn install() -> io::Result<()> {
         // std creates close-on-exec sockets, so hosted apps cannot keep these
         // descriptors alive. Only the signal handler's endpoint is nonblocking.
@@ -107,15 +98,11 @@ mod native {
                 let mut bytes = [0u8; 64];
                 loop {
                     match reader.read(&mut bytes) {
-                        Ok(0) => {
-                            restore_defaults();
-                            return;
-                        }
+                        Ok(0) => return,
                         Ok(_) => request(),
                         Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                         Err(err) => {
                             log!("Termination signal worker failed: {err}");
-                            restore_defaults();
                             return;
                         }
                     }

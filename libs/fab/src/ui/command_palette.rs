@@ -308,8 +308,7 @@ impl Widget for FabCommandPalette {
             return;
         }
         for (slot, id) in slot_ids().iter().enumerate() {
-            // A press taken away (a list or the host took the finger) runs nothing.
-            if self.view.view(cx, id).finger_up(actions).is_some_and(|e| !e.cancelled) {
+            if self.view.view(cx, id).finger_up(actions).is_some() {
                 self.cursor = self.top + slot;
                 self.run(cx);
                 return;

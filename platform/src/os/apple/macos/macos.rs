@@ -13,7 +13,7 @@ use {
                 VideoSeekableRangesEvent, VideoTextureUpdatedEvent, VideoYuvTexturesReady,
             },
             Event, GameInputEventChannel, MouseButton, MouseUpEvent, QuitReason, VideoSource,
-            WindowGeom, WindowGeomChangeEvent,
+            WindowGeom,
         },
         makepad_live_id::*,
         makepad_math::*,
@@ -42,7 +42,7 @@ use {
         shared_framebuf::PollTimers,
         texture::{Texture, TextureFormat},
         thread::SignalToUI,
-        window::{CxWindow, CxWindowPool, MacosWindowConfig, WindowId},
+        window::{CxWindowPool, MacosWindowConfig, WindowId},
         PlaybackPrepared,
     },
     makepad_objc_sys::{msg_send, objc_block, sel, sel_impl},
@@ -659,35 +659,16 @@ impl Cx {
         init_macos_app_global(Box::new({
             let cx = cx.clone();
             move |event| {
-                use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
                 let mut cx_ref = cx.borrow_mut();
                 let mut metal_cx = metal_cx.borrow_mut();
                 let mut metal_windows = metal_windows.borrow_mut();
-                // A panic unwinds on to the callback boundary that contains
-                // it (`shielded`), and `do_callback` keeps this callback:
-                // put `Cx` back in order first, so the next event finds it
-                // consistent (as on iOS).
-                let event_flow = match catch_unwind(AssertUnwindSafe(|| {
-                    cx_ref.cocoa_event_callback(event, &mut metal_cx, &mut metal_windows)
-                })) {
-                    Ok(event_flow) => event_flow,
-                    Err(payload) => {
-                        cx_ref.recover_after_caught_panic();
-                        drop(metal_windows);
-                        drop(metal_cx);
-                        drop(cx_ref);
-                        resume_unwind(payload);
-                    }
-                };
+                let event_flow =
+                    cx_ref.cocoa_event_callback(event, &mut metal_cx, &mut metal_windows);
                 let executor = cx_ref.executor.take().unwrap();
                 drop(cx_ref);
-                // Put the executor back even if a spawned task panics, so the
-                // `take` above can't hand a `None` to the next event.
-                let stalled = catch_unwind(AssertUnwindSafe(|| executor.run_until_stalled()));
-                cx.borrow_mut().executor = Some(executor);
-                if let Err(payload) = stalled {
-                    resume_unwind(payload);
-                }
+                executor.run_until_stalled();
+                let mut cx_ref = cx.borrow_mut();
+                cx_ref.executor = Some(executor);
                 event_flow
             }
         }));
@@ -752,8 +733,8 @@ impl Cx {
         let time_now = self
             .os
             .link_flip_time
-            .unwrap_or_else(|| with_macos_app(|app| app.time_now()));
-        let pass_time = self.pass_time(time_now);
+            .map(|t| t as f32)
+            .unwrap_or_else(|| with_macos_app(|app| app.time_now() as f32));
         let scope = self.os.link_scope;
         for draw_pass_id in &passes_todo {
             // Remote capture only spends a present on its requested window.
@@ -956,7 +937,7 @@ impl Cx {
                         };
                         let uniforms_gen = self.next_uniform_gen();
                         if let Some(trace) = &metal_cx.present_trace { trace.mark(PresentStage::Draw); }
-                        self.passes[*draw_pass_id].set_time(pass_time, uniforms_gen);
+                        self.passes[*draw_pass_id].set_time(time_now, uniforms_gen);
                         let presented = if metal_window.is_resizing {
                             self.draw_pass(
                                 *draw_pass_id,
@@ -994,12 +975,12 @@ impl Cx {
                 CxDrawPassParent::DrawPass(_) => {
                     //let dpi_factor = self.get_delegated_dpi_factor(parent_pass_id);
                     let uniforms_gen = self.next_uniform_gen();
-                    self.passes[*draw_pass_id].set_time(pass_time, uniforms_gen);
+                    self.passes[*draw_pass_id].set_time(time_now, uniforms_gen);
                     self.draw_pass(*draw_pass_id, metal_cx, DrawPassMode::Texture);
                 }
                 CxDrawPassParent::None => {
                     let uniforms_gen = self.next_uniform_gen();
-                    self.passes[*draw_pass_id].set_time(pass_time, uniforms_gen);
+                    self.passes[*draw_pass_id].set_time(time_now, uniforms_gen);
                     self.draw_pass(*draw_pass_id, metal_cx, DrawPassMode::Texture);
                 }
             }
@@ -1044,8 +1025,7 @@ impl Cx {
         // as the idle heartbeat. NSView.displayLink never fires for a window
         // that is not on screen — hidden eval/test runs (MAKEPAD_HIDE_WINDOWS)
         // pace on the timer or they freeze.
-        let want_link = std::env::var_os("MAKEPAD_HIDE_WINDOWS").is_none()
-            && !with_macos_app(|app| app.all_windows_miniaturized());
+        let want_link = std::env::var_os("MAKEPAD_HIDE_WINDOWS").is_none();
         // Self-heal: a window close invalidated the link while the beat
         // thought itself armed — re-anchor on a surviving window.
         if self.os.timer0_armed && want_link && with_macos_app(|app| app.display_link_needs_rearm())
@@ -1148,10 +1128,10 @@ impl Cx {
                     // deferred the NSTimer) or a SLOW CALLBACK (our work)?
                     let trace_t0 = if crate::makepad_error_log::trace_enabled("timer") {
                         thread_local! {
-                            static LAST_FIRE: std::cell::Cell<Option<std::time::Instant>> =
+                            static LAST_FIRE: std::cell::Cell<Option<crate::sols_browser_time::Instant>> =
                                 const { std::cell::Cell::new(None) };
                         }
-                        let now = std::time::Instant::now();
+                        let now = crate::sols_browser_time::Instant::now();
                         LAST_FIRE.with(|last| {
                             if let Some(prev) = last.replace(Some(now)) {
                                 let gap_ms = prev.elapsed().as_secs_f64() * 1000.0;
@@ -1232,16 +1212,16 @@ impl Cx {
                             self.os.timer0_idle_since = Some(now);
                         }
                     }
-                    let step_t = trace_t0.map(|_| std::time::Instant::now());
+                    let step_t = trace_t0.map(|_| crate::sols_browser_time::Instant::now());
                     self.run_live_edit_if_needed("macos");
                     let live_edit_ms = step_t.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                    let step_t = trace_t0.map(|_| std::time::Instant::now());
+                    let step_t = trace_t0.map(|_| crate::sols_browser_time::Instant::now());
                     self.handle_networking_events();
                     let net_ms = step_t.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                    let step_t = trace_t0.map(|_| std::time::Instant::now());
+                    let step_t = trace_t0.map(|_| crate::sols_browser_time::Instant::now());
                     self.handle_gamepad_events();
                     let pad_ms = step_t.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                    let paint_t = trace_t0.map(|_| std::time::Instant::now());
+                    let paint_t = trace_t0.map(|_| crate::sols_browser_time::Instant::now());
                     // Propagate Exit from the inner Paint dispatch. The
                     // signal handling above (Ctrl+C / SIGTERM) calls
                     // `request_quit`, which queues a `CxOsOp::Quit`; that op
@@ -1262,7 +1242,7 @@ impl Cx {
                     let paint_ms = paint_t.map(|t| t.elapsed().as_secs_f64() * 1000.0);
 
                     // Run garbage collection if needed - safe moment after paint, before waiting
-                    let gc_t0 = std::time::Instant::now();
+                    let gc_t0 = crate::sols_browser_time::Instant::now();
                     let mut did_gc = false;
                     self.with_vm(|vm| {
                         if vm.heap().needs_gc() {
@@ -1335,22 +1315,31 @@ impl Cx {
                     window.stop_resize();
                 }
             }
-            MacosEvent::WindowGeomChange(re) => {
-                let re = self.update_window_geom(metal_windows, re);
+            MacosEvent::WindowGeomChange(mut re) => {
+                // do this here because mac
+                if let Some(window) = metal_windows
+                    .iter_mut()
+                    .find(|w| w.window_id == re.window_id)
+                {
+                    {
+                        let cx_window = &mut self.windows[re.window_id];
+                        cx_window.os_dpi_factor = Some(re.new_geom.dpi_factor);
+                        re.new_geom = cx_window.native_window_geom_to_layout(re.new_geom);
+                    }
+                    window.window_geom = re.new_geom.clone();
+                    self.windows[re.window_id].window_geom = re.new_geom.clone();
+
+                    // redraw just this windows root draw list
+                    if re.old_geom.dpi_factor != re.new_geom.dpi_factor
+                        || re.old_geom.inner_size != re.new_geom.inner_size
+                    {
+                        if let Some(main_pass_id) = self.windows[re.window_id].main_pass_id {
+                            self.redraw_pass_and_child_passes(main_pass_id);
+                        }
+                    }
+                }
                 // ok lets not redraw all, just this window
                 self.call_event_handler(&Event::WindowGeomChange(re));
-            }
-            MacosEvent::WindowMiniaturizeChange => {
-                // This is the last beat we get once the Dock takes the window,
-                // so swap the paint clock over now.
-                if with_macos_app(|app| app.all_windows_miniaturized()) {
-                    self.ensure_timer0_stopped();
-                } else {
-                    // The links are only paused, not dropped, so the armed flag
-                    // would early-out before anything unpauses them.
-                    self.os.timer0_armed = false;
-                    self.ensure_timer0_started();
-                }
             }
             MacosEvent::WindowClosed(wc) => {
                 // lets remove the window from the set
@@ -1768,39 +1757,6 @@ impl Cx {
         self.start_external_drag_now(metal_windows, window_id, items);
     }
 
-    fn update_window_geom(
-        &mut self,
-        metal_windows: &mut [MetalWindow],
-        mut re: WindowGeomChangeEvent,
-    ) -> WindowGeomChangeEvent {
-        // do this here because mac
-        if let Some(window) = metal_windows
-            .iter_mut()
-            .find(|w| w.window_id == re.window_id)
-        {
-            // Platform calls may have moved the traffic lights since this geometry was taken.
-            re.new_geom.window_chrome_buttons =
-                window.cocoa_window.traffic_lights_geom().unwrap_or_default();
-            {
-                let cx_window = &mut self.windows[re.window_id];
-                cx_window.os_dpi_factor = Some(re.new_geom.dpi_factor);
-                re.new_geom = cx_window.native_window_geom_to_layout(re.new_geom);
-            }
-            window.window_geom = re.new_geom.clone();
-            self.windows[re.window_id].window_geom = re.new_geom.clone();
-
-            // redraw just this windows root draw list
-            if re.old_geom.dpi_factor != re.new_geom.dpi_factor
-                || re.old_geom.inner_size != re.new_geom.inner_size
-            {
-                if let Some(main_pass_id) = self.windows[re.window_id].main_pass_id {
-                    self.redraw_pass_and_child_passes(main_pass_id);
-                }
-            }
-        }
-        re
-    }
-
     fn handle_platform_ops(
         &mut self,
         metal_windows: &mut Vec<MetalWindow>,
@@ -1822,9 +1778,6 @@ impl Cx {
                     );
                     let visuals = window.window_visuals();
                     metal_window.cocoa_window.set_window_visuals(visuals);
-                    metal_window
-                        .cocoa_window
-                        .set_dpi_override(window.dpi_override.and_then(CxWindow::valid_dpi_factor));
                     let layer_opaque = if visuals.transparent { NO } else { YES };
                     let layer_alpha = if visuals.transparent { 0.0 } else { 1.0 };
                     let () = unsafe { msg_send![metal_window.ca_layer, setOpaque: layer_opaque] };
@@ -1961,23 +1914,6 @@ impl Cx {
                         metal_windows.iter_mut().find(|w| w.window_id == window_id)
                     {
                         metal_window.cocoa_window.set_title(&title);
-                    }
-                }
-                CxOsOp::SetWindowDpiOverride(window_id, dpi_override) => {
-                    let geom_change = metal_windows
-                        .iter_mut()
-                        .find(|w| w.window_id == window_id)
-                        .and_then(|metal_window| {
-                            let cocoa_window = &mut metal_window.cocoa_window;
-                            cocoa_window
-                                .set_dpi_override(dpi_override)
-                                .then(|| cocoa_window.take_window_geom_change())
-                        });
-                    // We queue the moved traffic lights behind any older geometry changes,
-                    // which all get reported once these platform calls are done.
-                    if let Some(geom_change) = geom_change {
-                        let geom_change = self.update_window_geom(metal_windows, geom_change);
-                        self.pending_window_geom_changes.push(geom_change);
                     }
                 }
                 CxOsOp::SetWindowVisuals(window_id, visuals) => {
@@ -2419,9 +2355,6 @@ impl Cx {
                 }
             }
         }
-        // Some of the above (like moving the traffic lights) change a window's geometry,
-        // so we report that before handling whatever event comes next.
-        self.handle_pending_window_geom_changes();
         EventFlow::Poll
     }
 
@@ -2567,7 +2500,7 @@ impl CxOsApi for Cx {
 
     fn init_cx_os(&mut self) {
         self.os.start_time = Some(Instant::now());
-        if let Some(item) = crate::app_meta::package_dir() {
+        if let Some(item) = std::option_env!("MAKEPAD_PACKAGE_DIR") {
             self.package_root = Some(item.to_string());
         }
 
@@ -2615,7 +2548,6 @@ impl CxOsApi for Cx {
     }
 
     fn open_url(&mut self, url: &str, _in_place: OpenUrlInPlace) {
-        if self.script_data.std.host_io_only() { return; }
         // Use the macOS `open` command to open URLs
         let _ = std::process::Command::new("open").arg(url).spawn();
     }

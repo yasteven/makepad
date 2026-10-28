@@ -14,7 +14,8 @@ mod imp {
     use std::io::{self, Write};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::sols_browser_time::SystemTime;
+use crate::sols_browser_time::UNIX_EPOCH;
 
     const ENTRY_MAGIC: &[u8; 8] = b"MPRNGC01";
     const ENTRY_HEADER_LEN: usize = 24;

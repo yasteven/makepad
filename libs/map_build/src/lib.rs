@@ -15,20 +15,13 @@
 //! them from a shell or an app runs them on a worker thread; [`progress`]
 //! is how the latter gets the lines the former prints to stdout.
 
-#[cfg(all(feature = "faces", not(target_arch = "wasm32")))]
+#[cfg(feature = "faces")]
 pub mod faces;
 pub mod mkmap;
 pub mod nav_build;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 pub mod osm_pbf;
 pub mod progress;
-#[cfg(all(feature = "faces", not(target_arch = "wasm32")))]
-pub mod render_check;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod repack;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod repack_remote;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod testmap;
 pub mod versatiles;

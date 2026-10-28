@@ -370,7 +370,7 @@ mod tests {
 
     fn bundled_font_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../widgets/resources/IBMPlexSans-Text.ttf")
+            .join("makepad_widgets:resources/IBMPlexSans-Text.ttf")
     }
 
     #[test]

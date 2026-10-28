@@ -1,7 +1,6 @@
 use crate::{
     event::{
-        DragEvent, DropEvent, KeyEvent, MouseDownEvent, MouseLeaveEvent, MouseMoveEvent,
-        MouseUpEvent,
+        DragEvent, DropEvent, KeyEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
         PinchEvent, PopupDismissedEvent, ScrollEvent, TextClipboardEvent, TextInputEvent,
         TimerEvent,
         WindowCloseRequestedEvent, WindowClosedEvent, WindowDragQueryEvent, WindowGeomChangeEvent,
@@ -21,9 +20,6 @@ pub enum XlibEvent {
     MouseDown(MouseDownEvent),
     MouseUp(MouseUpEvent),
     MouseMove(MouseMoveEvent),
-    /// The pointer left the window. Hovered widgets need this to un-hover;
-    /// without it the last one stays lit until the pointer comes back.
-    MouseLeave(MouseLeaveEvent),
     Scroll(ScrollEvent),
     /// A trackpad pinch; only the Wayland backend produces one.
     Pinch(PinchEvent),

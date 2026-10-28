@@ -6,23 +6,17 @@
 //! the runtime, so putting them on the GPU would mean a DFT-as-GEMM that costs
 //! more than it saves.
 //!
-//! Input  `features`: `[4100, frames]` f32 — one chunk's spectrum, feature-major
-//!        (1101 frames at the full chunk, see `ChunkGeometry`).
+//! Input  `features`: `[4100, 1101]` f32 — one chunk's spectrum, feature-major.
 //!        Feature `f` at frame `t` is `((bin*2 + channel) * 2 + re_im)`, i.e.
 //!        the reference's `rearrange('b s f t c -> b t ((f s) c)')`.
-//! Output `mask[stem]`: `[4100, frames]` f32, same layout — the complex ratio
+//! Output `mask[stem]`: `[4100, 1101]` f32, same layout — the complex ratio
 //!        mask the caller multiplies into the spectrum before the inverse STFT.
 //!
 //! Two axis layouts alternate through the trunk, exactly as in the reference's
 //! axial attention:
-//!   TIME layout `[384, frames, 62]` — sequence over frames, batch over bands.
-//!   FREQ layout `[384, 62, frames]` — sequence over bands, batch over frames.
+//!   TIME layout `[384, 1101, 62]` — sequence over frames, batch over bands.
+//!   FREQ layout `[384, 62, 1101]` — sequence over bands, batch over frames.
 //! The transition is one `permute` + `cont`.
-//!
-//! No weight depends on the frame count: the frame axis is a batch axis to
-//! every band-wise matmul and a sequence axis only to the time attention,
-//! whose positions are generated here. The graph is therefore built for a
-//! frame count rather than for a constant.
 
 use crate::config::*;
 use crate::weights::{
@@ -56,9 +50,7 @@ pub struct StemsGraph {
     pub masks: [TensorId; NUM_STEMS],
 }
 
-/// Builds the forward graph for chunks of `frames` STFT frames.
-pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGraph> {
-    let frames_i = frames as i64;
+pub fn build_graph(weights: &mut StemsWeights) -> Result<StemsGraph> {
     let groups = band_groups();
     let ctx = &mut weights.ctx;
 
@@ -67,12 +59,12 @@ pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGra
             "features",
             TensorType::F32,
             2,
-            &[FEATURES as i64, frames_i],
+            &[FEATURES as i64, CHUNK_FRAMES as i64],
             ACT,
         )
         .map_err(DiffusionError::model)?;
 
-    let pos_time = positions(ctx, "pos.time", frames)?;
+    let pos_time = positions(ctx, "pos.time", CHUNK_FRAMES)?;
     let pos_freq = positions(ctx, "pos.freq", NUM_BANDS)?;
 
     // Everything above needs real arena bytes (weights, the input the caller
@@ -93,7 +85,7 @@ pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGra
             .view(
                 features,
                 TensorType::F32,
-                &[w, n, frames_i],
+                &[w, n, CHUNK_FRAMES as i64],
                 &[F32_SIZE, group.width * F32_SIZE, FEATURES * F32_SIZE],
                 group.feature_offset * F32_SIZE,
             )
@@ -105,10 +97,10 @@ pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGra
             .mul_mat(weights_id(ctx, &bs_weight(g))?, x, ACT)
             .map_err(DiffusionError::model)?;
         let x = add(ctx, x, weights_id(ctx, &bs_bias(g))?)?;
-        debug_assert_extents(ctx, x, &[DIM as i64, frames_i, n], "band split")?;
+        debug_assert_extents(ctx, x, &[DIM as i64, CHUNK_FRAMES as i64, n], "band split")?;
         band_outputs.push(x);
     }
-    // [384, frames, 62] — TIME layout.
+    // [384, 1101, 62] — TIME layout.
     let mut x = concat_all(ctx, &band_outputs, 2)?;
 
     // ---- 8 blocks of (time transformer, freq transformer) ----
@@ -122,7 +114,7 @@ pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGra
             x = swap12_cont(ctx, x)?;
         }
     }
-    // After the last freq transformer x is FREQ layout: [384, 62, frames].
+    // After the last freq transformer x is FREQ layout: [384, 62, 1101].
     let x = norm_scale(ctx, x, weights_id(ctx, FINAL_NORM)?)?;
 
     // ---- mask estimators ----
@@ -135,7 +127,7 @@ pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGra
             .view(
                 x,
                 TensorType::F32,
-                &[DIM as i64, n, frames_i],
+                &[DIM as i64, n, CHUNK_FRAMES as i64],
                 &[
                     F32_SIZE,
                     DIM * F32_SIZE,
@@ -176,12 +168,12 @@ pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGra
             let out = ctx
                 .binary_like_a(Op::Mul, value, gate, ACT)
                 .map_err(DiffusionError::model)?;
-            debug_assert_extents(ctx, out, &[w, frames_i, n], "mask estimator")?;
+            debug_assert_extents(ctx, out, &[w, CHUNK_FRAMES as i64, n], "mask estimator")?;
             // (feature, frame, band) -> (feature, band, frame), then flatten
             // the band-major feature block for this group.
             let out = swap12_cont(ctx, out)?;
             let out = ctx
-                .reshape(out, &[w * n, frames_i])
+                .reshape(out, &[w * n, CHUNK_FRAMES as i64])
                 .map_err(DiffusionError::model)?;
             parts.push(out);
         }
@@ -189,7 +181,7 @@ pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGra
         debug_assert_extents(
             ctx,
             mask,
-            &[FEATURES as i64, frames_i],
+            &[FEATURES as i64, CHUNK_FRAMES as i64],
             "stem mask",
         )?;
         masks[stem] = mask;
@@ -216,7 +208,7 @@ pub fn build_graph(weights: &mut StemsWeights, frames: usize) -> Result<StemsGra
 // feed-forward block, both residual.
 // ---------------------------------------------------------------------------
 
-pub(crate) fn transformer(
+fn transformer(
     ctx: &mut Context,
     x: TensorId,
     positions: TensorId,
@@ -323,36 +315,21 @@ pub(crate) fn transformer(
 // helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn weights_id(ctx: &Context, name: &str) -> Result<TensorId> {
+fn weights_id(ctx: &Context, name: &str) -> Result<TensorId> {
     ctx.get_tensor(name)
         .ok_or_else(|| DiffusionError::model(format!("stems graph: no tensor '{name}'")))
 }
 
 /// `rms_norm(x) * gamma`; the Metal planner fuses the pair into one kernel.
-pub(crate) fn norm_scale(
-    ctx: &mut Context,
-    x: TensorId,
-    gamma: TensorId,
-) -> Result<TensorId> {
-    norm_scale_eps(ctx, x, gamma, NORM_EPS)
-}
-
-/// [`norm_scale`] with the epsilon of the caller's choosing, for a graph
-/// whose input is not at the scale [`NORM_EPS`] was chosen for.
-pub(crate) fn norm_scale_eps(
-    ctx: &mut Context,
-    x: TensorId,
-    gamma: TensorId,
-    eps: f32,
-) -> Result<TensorId> {
+fn norm_scale(ctx: &mut Context, x: TensorId, gamma: TensorId) -> Result<TensorId> {
     let n = ctx
-        .rms_norm_eps(x, eps, ACT)
+        .rms_norm_eps(x, NORM_EPS, ACT)
         .map_err(DiffusionError::model)?;
     ctx.binary_like_a(Op::Mul, n, gamma, ACT)
         .map_err(DiffusionError::model)
 }
 
-pub(crate) fn add(ctx: &mut Context, x: TensorId, bias: TensorId) -> Result<TensorId> {
+fn add(ctx: &mut Context, x: TensorId, bias: TensorId) -> Result<TensorId> {
     ctx.binary_like_a(Op::Add, x, bias, ACT)
         .map_err(DiffusionError::model)
 }
@@ -365,7 +342,7 @@ fn swap12(ctx: &mut Context, x: TensorId) -> Result<TensorId> {
 
 /// `swap12` followed by `cont` — the layout flip as one call, so the borrow
 /// checker sees a single sequential use of the context.
-pub(crate) fn swap12_cont(ctx: &mut Context, x: TensorId) -> Result<TensorId> {
+fn swap12_cont(ctx: &mut Context, x: TensorId) -> Result<TensorId> {
     let permuted = swap12(ctx, x)?;
     contiguous(ctx, permuted)
 }
@@ -415,7 +392,7 @@ fn concat_all(ctx: &mut Context, parts: &[TensorId], dim: usize) -> Result<Tenso
 }
 
 /// Position indices 0..n as the I32 tensor RoPE reads.
-pub(crate) fn positions(ctx: &mut Context, name: &str, n: usize) -> Result<TensorId> {
+fn positions(ctx: &mut Context, name: &str, n: usize) -> Result<TensorId> {
     let id = ctx
         .new_named_tensor(name, TensorType::I32, 1, &[n as i64], BufferUsage::Weights)
         .map_err(DiffusionError::model)?;
@@ -427,7 +404,7 @@ pub(crate) fn positions(ctx: &mut Context, name: &str, n: usize) -> Result<Tenso
     Ok(id)
 }
 
-pub(crate) fn debug_assert_extents(
+fn debug_assert_extents(
     ctx: &Context,
     id: TensorId,
     want: &[i64],

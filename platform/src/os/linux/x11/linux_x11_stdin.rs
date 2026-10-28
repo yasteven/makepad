@@ -464,10 +464,10 @@ impl Cx {
         self.compute_pass_repaint_order(&mut passes_todo);
         self.repaint_id += 1;
 
-        let time = self.pass_time(self.os.stdin_timers.time_now());
+        let time_now = self.os.stdin_timers.time_now();
         for &draw_pass_id in &passes_todo {
             let uniforms_gen = self.next_uniform_gen();
-            self.passes[draw_pass_id].set_time(time, uniforms_gen);
+            self.passes[draw_pass_id].set_time(time_now as f32, uniforms_gen);
             match self.passes[draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {}
                 CxDrawPassParent::Window(window_id) => {
@@ -710,11 +710,6 @@ impl Cx {
                 }
             }
         }
-        // If no render ran the retirement step under this beat's repaint_id, run it here.
-        #[cfg(not(linux_direct))]
-        if self.draw_lists.1.retirement_frame != Some(self.repaint_id) {
-            self.maintain_instance_retirements();
-        }
     }
 
     #[cfg(not(all(use_vulkan, linux_direct)))]
@@ -745,8 +740,6 @@ impl Cx {
         self.set_physical_keyboard_state(true);
         self.call_event_handler(&Event::Startup);
         Self::stdin_send_to_host(AppToStudio::AfterStartup);
-        // What this child's pointer input understands (see HostedPointerCaps).
-        Self::stdin_send_to_host(AppToStudio::Custom(crate::ime::HostedPointerCaps::current().to_json()));
         #[cfg(all(use_vulkan, linux_direct))]
         self.stdin_gpu_hello();
         self.stdin_handle_platform_ops(&mut stdin_windows);
@@ -860,7 +853,7 @@ impl Cx {
                 };
                 self.call_event_handler(&Event::TweakRay(tweak_ray));
             }
-            StudioToApp::MouseUp(ref e) | StudioToApp::MouseCancel(ref e) => {
+            StudioToApp::MouseUp(ref e) => {
                 let (window_id, pos) = if let Some((_, window_id)) = self.fingers.first_mouse_button
                 {
                     (window_id, self.windows[window_id].window_geom.position)

@@ -781,16 +781,24 @@ impl XlibApp {
                 x11_sys::EnterNotify => {}
                 x11_sys::LeaveNotify => {
                     let crossing = event.xcrossing;
-                    // NotifyInferior means the pointer only crossed into a child of this
-                    // window, so it has not actually left. A grab/ungrab crossing is
-                    // bookkeeping rather than a real move, and acting on it would drop the
-                    // hover mid-drag.
-                    const NOTIFY_NORMAL: i32 = 0;
-                    const NOTIFY_INFERIOR: i32 = 2;
-                    if crossing.mode == NOTIFY_NORMAL && crossing.detail != NOTIFY_INFERIOR {
-                        if let Some(window_ptr) = self.window_map.get(&crossing.window) {
+                    if crossing.detail == 4 {
+                        if let Some(_window_ptr) = self.window_map.get(&crossing.window) {
+                            //TODO figure this out
+                            /*
                             let window = &mut (**window_ptr);
-                            window.send_mouse_leave(KeyModifiers::default());
+                            window.do_callback(Event::FingerHover(FingerHoverEvent {
+                                digit: 0,
+                                window_id: window.window_id,
+                                any_down: false,
+                                abs: window.last_mouse_pos,
+                                rel: window.last_mouse_pos,
+                                rect: Rect::default(),
+                                handled: false,
+                                hover_state: HoverState::Out,
+                                modifiers: KeyModifiers::default(),
+                                time: window.time_now()
+                            }));
+                            */
                         }
                     }
                 }
@@ -1473,10 +1481,7 @@ impl XlibApp {
             MouseCursor::ColResize => self.load_first_cursor(&[b"split_h\0", b"h_double_arrow\0"]),
             MouseCursor::RowResize => self.load_first_cursor(&[b"split_v\0", b"v_double_arrow\0"]),
             MouseCursor::Grab => self.load_first_cursor(&[b"grab\0"]),
-            // `closedhand` is the Qt/KDE name; `fleur` is a core X cursor, so it always loads.
-            MouseCursor::Grabbing => {
-                self.load_first_cursor(&[b"grabbing\0", b"closedhand\0", b"fleur\0"])
-            }
+            MouseCursor::Grabbing => self.load_first_cursor(&[b"grabbing\0"]),
         };
         if let Some(x11_cursor) = x11_cursor {
             unsafe {
@@ -1686,7 +1691,6 @@ pub struct XlibAtoms {
     pub net_wm_state: x11_sys::Atom,
     pub new_wm_state_maximized_horz: x11_sys::Atom,
     pub new_wm_state_maximized_vert: x11_sys::Atom,
-    pub net_wm_state_fullscreen: x11_sys::Atom,
     pub targets: x11_sys::Atom,
     pub string: x11_sys::Atom,
     pub utf8_string: x11_sys::Atom,
@@ -1752,11 +1756,6 @@ impl XlibAtoms {
                 new_wm_state_maximized_vert: x11_sys::XInternAtom(
                     display,
                     "_NET_WM_STATE_MAXIMIZED_VERT\0".as_ptr() as *const _,
-                    0,
-                ),
-                net_wm_state_fullscreen: x11_sys::XInternAtom(
-                    display,
-                    "_NET_WM_STATE_FULLSCREEN\0".as_ptr() as *const _,
                     0,
                 ),
                 targets: x11_sys::XInternAtom(display, "TARGETS\0".as_ptr() as *const _, 0),

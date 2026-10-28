@@ -22,7 +22,7 @@ use makepad_weather::{ai, view::WeatherView};
 use makepad_widgets::desktop_style::{self, DesktopStyle, StyleSheet};
 use makepad_widgets::*;
 
-app_main!(App, font_assets: [INTER_FONT_ASSET, ROBOTO_FLEX_FONT_ASSET]);
+app_main!(App);
 
 script_mod! {
     use mod.prelude.widgets.*

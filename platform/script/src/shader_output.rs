@@ -250,8 +250,6 @@ pub struct ShaderOutput {
     pub errors: Vec<String>,
     /// True if this shader uses screen-space derivatives (dFdx/dFdy).
     pub uses_derivatives: bool,
-    /// True if this shader reads `draw_pass.time`, so its pass repaints every frame.
-    pub uses_time: bool,
     /// Monotonic temporary id source for Rust backend expression hoisting.
     pub rust_tmp_counter: usize,
     /// Monotonic id source for loop-guard locals, so nested guards never
@@ -266,13 +264,6 @@ pub struct ShaderOutput {
     /// Set once the emitted-size budget is blown, so the error is raised
     /// exactly once rather than at every subsequent write.
     pub size_exceeded: bool,
-    /// The scope objects whose methods this shader calls, in the order it
-    /// first calls them: a method's name prefix is its object's place here
-    /// (`scope0_`, `scope1_`, …). The object's heap index would do for
-    /// uniqueness but changes whenever the module is evaluated again (a
-    /// style reload), which made the same shader's source text differ and
-    /// the GPU compile it again; the order of first use does not change.
-    pub scope_prefixes: Vec<usize>,
 }
 
 /// Ceiling on total emitted shader source. Real shaders here run to tens of
@@ -338,7 +329,6 @@ pub struct ShaderFn {
     pub args: Vec<ScriptPodType>,
     pub fnobj: ScriptObject,
     pub out: String,
-    pub callees: Vec<usize>,
     pub ret: ScriptPodType,
 }
 
@@ -449,8 +439,6 @@ impl ShaderOutput {
     /// Note: RustInstance and DynInstance are handled separately - RustInstance via
     /// pre_collect_rust_instance_io (from Rust type properties), DynInstance during compilation.
     pub fn pre_collect_shader_io(&mut self, vm: &mut ScriptVm, io_self: ScriptObject) {
-        self.backend.register_ids();
-
         // Use recursion to process from deepest prototype first (no temporary Vec needed)
         self.pre_collect_shader_io_recursive(vm, io_self);
 

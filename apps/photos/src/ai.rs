@@ -30,8 +30,8 @@ pub fn manifest() -> ServiceManifest {
         "photos",
         "Photos",
         "The picture wall on screen — a pannable, zoomable grid of a baked \
-         collection (each picture's title is whatever words the library \
-         recorded for it). Its tools only \
+         collection (the SMBC comic archive by default: each picture's title \
+         is its date and the hover text the author wrote). Its tools only \
          look: search the words the pictures carry, and show one picture by \
          its id from a search. `add` puts a picture file from this machine \
          on the wall — a generated image saved under the makepad home, or \
@@ -147,9 +147,7 @@ pub fn addable(path: &Path) -> Result<(), String> {
 /// photos lib is a web pilot and must stay light.
 pub fn allowed_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    // An empty MAKEPAD_HOME counts as unset: PathBuf::from("") would make
-    // every path below it relative to the current folder.
-    if let Some(home) = std::env::var_os("MAKEPAD_HOME").filter(|home| !home.is_empty()) {
+    if let Some(home) = std::env::var_os("MAKEPAD_HOME") {
         roots.push(PathBuf::from(home).join("gen"));
     }
     if let Some(user_home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {

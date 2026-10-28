@@ -442,11 +442,10 @@ mod tests {
     // Native dialog test uses wall time only to make its temporary path unique.
     #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     fn native_file_loading_runs_on_a_worker_and_preserves_bytes() {
-        use std::{
-            sync::mpsc::channel,
-            thread,
-            time::{SystemTime, UNIX_EPOCH},
-        };
+        use std::sync::mpsc::channel;
+use std::thread;
+use crate::sols_browser_time::SystemTime;
+use crate::sols_browser_time::UNIX_EPOCH;
 
         let ui_thread = thread::current().id();
         let unique = SystemTime::now()

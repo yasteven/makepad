@@ -5,9 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-// The system's curl does the transfers (curl.exe ships with Windows 10 and
-// 11), so the Builder depends on nothing outside its own small crates.
-use crate::curl_http::{self as blocking_http, Limits, Request};
+use makepad_network::blocking_http::{self, Limits, Request};
 
 use crate::progress::{self, Progress};
 use crate::sha256;
@@ -45,70 +43,12 @@ pub fn fetch_method_progress(
     body: &[u8],
     file_name: Option<&str>,
 ) -> Result<blocking_http::Response, String> {
-    let on_body: Option<BodyProgress> = file_name.map(|name| {
-        let name = name.to_string();
-        let last = Arc::new(AtomicU64::new(0));
-        Arc::new(move |loaded: u64, total: Option<u64>| {
-            let prev = last.load(Ordering::Relaxed);
-            let step = 256 * 1024;
-            let done = total.is_some_and(|t| t > 0 && loaded >= t);
-            if !done && loaded < prev.saturating_add(step) {
-                return;
-            }
-            last.store(loaded, Ordering::Relaxed);
-            let frac = match total {
-                Some(t) if t > 0 => (loaded as f64 / t as f64) as f32,
-                _ => 0.0,
-            };
-            progress::emit(Progress {
-                stage: "Download".into(),
-                detail: name.clone(),
-                loaded,
-                total: total.unwrap_or(0),
-                frac,
-                unit: progress::Unit::Bytes,
-                package: progress::Package::default(),
-                overall: None,
-                row: String::new(),
-            });
-        }) as BodyProgress
-    });
-    fetch_with(method, url, headers, body, on_body, &[200])
-}
-
-/// Called with (bytes received, Content-Length) as a body arrives.
-pub type BodyProgress = Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
-
-/// One request, following public redirects; a status outside `ok` is an error.
-pub fn fetch_with(
-    method: &str,
-    url: &str,
-    headers: &[(String, String)],
-    body: &[u8],
-    on_body: Option<BodyProgress>,
-    ok: &[u16],
-) -> Result<blocking_http::Response, String> {
-    fetch_to(method, url, headers, body, on_body, ok).map(|(resp, _)| resp)
-}
-
-/// [`fetch_with`], also returning the address the redirects led to.
-pub fn fetch_to(
-    method: &str,
-    url: &str,
-    headers: &[(String, String)],
-    body: &[u8],
-    on_body: Option<BodyProgress>,
-    ok: &[u16],
-) -> Result<(blocking_http::Response, String), String> {
     let mut current = url.to_string();
     for _ in 0..8 {
         let display_url = current.split('?').next().unwrap_or(&current).to_string();
-        // A HEAD sent as GET downloads the whole body just to read its size.
         let mut req = match method {
-            "GET" => Request::get(&current),
             "POST" => Request::post(&current),
-            "HEAD" => head_request(&current),
-            _ => return Err(format!("Unsupported HTTP method {method}")),
+            _ => Request::get(&current),
         }
         .limits(big_limits())
         .body(body.to_vec());
@@ -117,15 +57,33 @@ pub fn fetch_to(
                 .header(name, value)
                 .map_err(|e| format!("{e} ({name})"))?;
         }
-        if let Some(on_body) = &on_body {
-            let on_body = on_body.clone();
-            req = req.on_body_progress(move |loaded, total| on_body(loaded, total));
+        if let Some(name) = file_name {
+            let name = name.to_string();
+            let last = Arc::new(AtomicU64::new(0));
+            req = req.on_body_progress(move |loaded, total| {
+                let prev = last.load(Ordering::Relaxed);
+                let step = 256 * 1024;
+                let done = total.is_some_and(|t| t > 0 && loaded >= t);
+                if !done && loaded < prev.saturating_add(step) {
+                    return;
+                }
+                last.store(loaded, Ordering::Relaxed);
+                let frac = match total {
+                    Some(t) if t > 0 => (loaded as f64 / t as f64) as f32,
+                    _ => 0.0,
+                };
+                progress::emit(Progress {
+                    stage: "Download".into(),
+                    detail: name.clone(),
+                    loaded,
+                    total: total.unwrap_or(0),
+                    frac,
+                    unit: progress::Unit::Bytes,
+                    package: progress::Package::default(),
+                });
+            });
         }
-        let mut span = crate::timing::span(crate::timing::Phase::Fetch);
-        let resp = blocking_http::request_no_redirect(req);
-        span.bytes(resp.as_ref().map_or(0, |r| r.body.len() as u64));
-        drop(span);
-        let resp = resp
+        let resp = blocking_http::request_no_redirect(req)
             .map_err(|e| {
                 if current.contains('?') { format!("HTTP request failed for {display_url}") }
                 else { format!("http {e} for {display_url}") }
@@ -147,7 +105,7 @@ pub fn fetch_to(
             current = next;
             continue;
         }
-        if !ok.contains(&resp.status) {
+        if resp.status != 200 {
             let detail = if resp.body.len() <= 4096 {
                 makepad_strict_json::parse(&resp.body).ok().and_then(|v| {
                     v.get("error")
@@ -163,13 +121,9 @@ pub fn fetch_to(
                 None => format!("http {} for {display_url}", resp.status),
             });
         }
-        return Ok((resp, current));
+        return Ok(resp);
     }
     Err(format!("too many redirects from {}", url.split('?').next().unwrap_or(url)))
-}
-
-fn head_request(url: &str) -> Request {
-    Request::head(url)
 }
 
 pub fn cached_file(
@@ -182,13 +136,10 @@ pub fn cached_file(
     let dest = cache.join(safe_name(file_name));
     let part = sidecar(&dest, ".part");
     let ok = sidecar(&dest, ".ok");
+    let _ = fs::remove_file(&part);
 
     progress::stage("Verify cache", file_name, 0.0);
-    let mut span = crate::timing::span(crate::timing::Phase::Verify);
-    let complete = dest.is_file() && file_is_complete(&dest, &ok, sha256_hex)?;
-    span.bytes(if complete { dest.metadata().map_or(0, |m| m.len()) } else { 0 });
-    drop(span);
-    if complete {
+    if dest.is_file() && file_is_complete(&dest, &ok, sha256_hex)? {
         crate::setup_note!(
             "  cache hit {}",
             dest.file_name().unwrap().to_string_lossy()
@@ -196,8 +147,9 @@ pub fn cached_file(
         return Ok(dest);
     }
     if dest.is_file() {
-        // Replaced by the download below (write_atomic renames over it).
         crate::setup_note!("  incomplete or corrupt {file_name}, redownloading");
+        let _ = fs::remove_file(&dest);
+        let _ = fs::remove_file(&ok);
     }
 
     crate::setup_note!("  download {file_name}");
@@ -208,10 +160,7 @@ pub fn cached_file(
     }
     if let Some(expect) = sha256_hex {
         progress::stage("Verify SHA-256", file_name, 0.0);
-        let mut span = crate::timing::span(crate::timing::Phase::Verify);
-        span.bytes(resp.body.len() as u64);
         let got = sha256::sha256_hex(&resp.body);
-        drop(span);
         if !got.eq_ignore_ascii_case(expect) {
             return Err(format!(
                 "sha256 mismatch for {file_name}: got {got} want {expect}"
@@ -228,7 +177,6 @@ pub fn cached_file(
     }
 
     progress::stage("Save download", file_name, 0.0);
-    let _span = crate::timing::span(crate::timing::Phase::Write);
     write_atomic(&dest, &part, &ok, &resp.body, sha256_hex)?;
     crate::setup_note!(
         "  wrote {} ({:.1} MB)",
@@ -296,27 +244,18 @@ pub fn download_probe() -> Result<(), String> {
     match result { Ok(_) | Err(blocking_http::Error::Timeout) => Ok(()), Err(e) => Err(e.to_string()) }
 }
 
-/// The size of a download before fetching it: a cached copy's size, else
-/// the server's Content-Length for a HEAD request; 0 when neither is known.
-pub fn download_size(cache: &Path, url: &str, file_name: &str) -> u64 {
-    if let Ok(meta) = fs::metadata(cache.join(safe_name(file_name))) {
-        return meta.len();
-    }
-    fetch_method("HEAD", url, &[], &[]).ok().and_then(|resp| content_length(&resp)).unwrap_or(0)
-}
-
-pub(crate) fn content_length(resp: &blocking_http::Response) -> Option<u64> {
+fn content_length(resp: &blocking_http::Response) -> Option<u64> {
     resp.header("content-length")
         .and_then(|s| s.trim().parse().ok())
 }
 
-pub(crate) fn sidecar(dest: &Path, extra: &str) -> PathBuf {
+fn sidecar(dest: &Path, extra: &str) -> PathBuf {
     let mut s = dest.as_os_str().to_os_string();
     s.push(extra);
     PathBuf::from(s)
 }
 
-pub(crate) fn file_is_complete(dest: &Path, ok: &Path, sha256_hex: Option<&str>) -> Result<bool, String> {
+fn file_is_complete(dest: &Path, ok: &Path, sha256_hex: Option<&str>) -> Result<bool, String> {
     let meta = dest.metadata().map_err(|e| e.to_string())?;
     if meta.len() == 0 {
         return Ok(false);
@@ -357,7 +296,7 @@ fn write_atomic(
     body: &[u8],
     sha256_hex: Option<&str>,
 ) -> Result<(), String> {
-    // A partial file from an earlier attempt is truncated, not deleted.
+    let _ = fs::remove_file(part);
     {
         let mut f = OpenOptions::new()
             .create(true)
@@ -372,14 +311,15 @@ fn write_atomic(
         .map(|s| s.to_string())
         .unwrap_or_else(|| sha256::sha256_hex(body));
     let stamp = format!("size={}\nsha256={sha}\n", body.len());
-    // On failure the .part file stays and the next attempt truncates it.
-    fs::rename(part, dest).map_err(|e| e.to_string())?;
-    // The stamp follows the file it describes; a hash check backs it anyway.
     fs::write(ok, stamp).map_err(|e| e.to_string())?;
+    if let Err(e) = fs::rename(part, dest) {
+        let _ = fs::remove_file(part);
+        return Err(e.to_string());
+    }
     Ok(())
 }
 
-pub(crate) fn safe_name(name: &str) -> String {
+fn safe_name(name: &str) -> String {
     name.replace(['/', '\\', ':'], "_")
 }
 

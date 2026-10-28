@@ -85,7 +85,7 @@ use {
                         HTSYSMENU, HTTOP, HTTOPLEFT, HTTOPRIGHT, HWND_NOTOPMOST, HWND_TOPMOST,
                         LWA_ALPHA, NCCALCSIZE_PARAMS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
                         SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
-                        WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
+                        WA_ACTIVE, WM_ACTIVATE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
                         WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_IME_COMPOSITION,
                         WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
                         WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
@@ -148,16 +148,6 @@ unsafe fn SetWindowCompositionAttribute(
 // `rc_area` (the current text line), so it appears directly above or below the
 // line rather than on top of it.
 const CFS_EXCLUDE: u32 = 0x0080;
-
-// The vendored `windows` bindings lack this constant too.
-const WM_SETCURSOR: u32 = 0x0020;
-
-// Nor do they have `GetCapture`; bind it the same way as the shims above.
-#[inline]
-unsafe fn GetCapture() -> HWND {
-    windows_core::link!("user32.dll" "system" fn GetCapture() -> HWND);
-    unsafe { GetCapture() }
-}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -523,12 +513,22 @@ impl Win32Window {
                 rv
             }
         };
-        // WindowFromPoint also sends hit-tests, so the platform sets no cursor here;
-        // the WM_SETCURSOR arm does, per hit code.
         match response_val {
-            WindowDragQueryResponse::Caption => LRESULT(HTCAPTION as isize),
-            WindowDragQueryResponse::SysMenu => LRESULT(HTSYSMENU as isize),
+            WindowDragQueryResponse::Caption => {
+                with_win32_app(|app| app.set_mouse_cursor(MouseCursor::Default));
+                LRESULT(HTCAPTION as isize)
+            }
+            WindowDragQueryResponse::SysMenu => {
+                with_win32_app(|app| app.set_mouse_cursor(MouseCursor::Default));
+                LRESULT(HTSYSMENU as isize)
+            }
             WindowDragQueryResponse::Client | WindowDragQueryResponse::NoAnswer => {
+                // Caption already restores Default above. Client must too: after
+                // HTLEFT/HTRIGHT the system size cursor sticks otherwise, and the
+                // window class cursor alone is not enough once we cleared
+                // `current_cursor` on the resize edge. Widgets re-apply Text/etc.
+                // on the following WM_MOUSEMOVE.
+                with_win32_app(|app| app.set_mouse_cursor(MouseCursor::Default));
                 LRESULT(HTCLIENT as isize)
             }
         }
@@ -800,8 +800,7 @@ impl Win32Window {
         let window = &mut (*(user_data as *mut Win32Window));
         match msg {
             WM_ACTIVATE => {
-                // Both WA_ACTIVE and WA_CLICKACTIVE mean the window was activated.
-                if wparam.0 & 0xffff != WA_INACTIVE as usize {
+                if wparam.0 & 0xffff == WA_ACTIVE as usize {
                     window.do_callback(Win32Event::WindowGotFocus(window.window_id));
                 } else {
                     if window.is_popup {
@@ -844,22 +843,6 @@ impl Win32Window {
                 return window.hit_test_extended_client(lparam);
             }
             WM_ERASEBKGND => return LRESULT(1),
-            WM_SETCURSOR => {
-                // DefWindowProc would replace a widget's cursor with the class arrow on each
-                // uncaptured client-area move; other hit codes keep their system cursors.
-                if (lparam.0 & 0xffff) as u32 == HTCLIENT {
-                    with_win32_app(|app| {
-                        // A cursor requested over another window is stale over this one.
-                        if app.cursor_hwnd.is_some_and(|other| other != hwnd) {
-                            app.request_cursor(MouseCursor::Default);
-                        }
-                        app.cursor_hwnd = Some(hwnd);
-                        app.apply_requested_cursor();
-                    });
-                    return LRESULT(1);
-                }
-                return DefWindowProcW(hwnd, msg, wparam, lparam);
-            }
             WM_MOUSEMOVE => {
                 if with_win32_app(|app| app.start_dragging_items.is_some()) {
                     return LRESULT(0);
@@ -885,14 +868,7 @@ impl Win32Window {
                 }
                 window.track_mouse_event = false;
                 window.send_mouse_leave(window.last_mouse_pos, Self::get_key_modifiers());
-                // MouseLeave ends every hover, so the cursor those hovers asked for must
-                // not come back on re-entry, unless another window has taken the pointer.
-                with_win32_app(|app| {
-                    app.current_cursor = None;
-                    if app.cursor_hwnd == Some(hwnd) {
-                        app.request_cursor(MouseCursor::Default);
-                    }
-                });
+                with_win32_app(|app| app.current_cursor = Some(MouseCursor::Hidden));
             }
             WM_MOUSEWHEEL => {
                 let delta = (wparam.0 >> 16) as u16 as i16 as f64;
@@ -1903,11 +1879,6 @@ impl Win32Window {
     }
 
     pub fn send_mouse_down(&mut self, button: MouseButton, modifiers: KeyModifiers) {
-        // Losing the capture also loses the button-ups that would balance the count,
-        // as when an OLE drag takes the capture and consumes the release.
-        if unsafe { GetCapture() } != self.hwnd {
-            self.mouse_buttons_down = 0;
-        }
         if self.mouse_buttons_down == 0 {
             unsafe {
                 SetCapture(self.hwnd);

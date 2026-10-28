@@ -20,8 +20,8 @@ use {
         os::{
             apple::apple_sys::*,
             apple_util::{
-                get_event_key_modifier, get_event_keycode, keycode_to_menu_key, load_mouse_cursor,
-                nsstring_to_string, str_to_nsstring,
+                get_event_key_modifier, get_event_keycode, keycode_to_menu_key, nsstring_to_string,
+                str_to_nsstring,
             },
             cx_native::EventFlow,
             macos::{macos_delegates::*, macos_event::*, macos_ime::MacosImeKeyboard, macos_window::MacosWindow},
@@ -314,9 +314,6 @@ pub struct MacosApp {
 
     pub cursors: HashMap<MouseCursor, ObjcId>,
     pub current_cursor: MouseCursor,
-    /// Whether the shown cursor was set directly, bypassing cursor rects, because
-    /// a mouse button was held.
-    cursor_set_directly: bool,
     /// Pointer lock (FPS mouse capture): while true the hardware cursor is
     /// frozen+hidden and MouseMove positions are synthesized from NSEvent
     /// deltas into `virtual_mouse` — downstream consumers never know.
@@ -388,7 +385,6 @@ impl MacosApp {
                 event_callback: Some(event_callback),
                 cursors: HashMap::new(),
                 current_cursor: MouseCursor::Default,
-                cursor_set_directly: false,
                 mouse_pointer_lock: false,
                 virtual_mouse: None,
                 pointer_lock_applied: false,
@@ -1023,28 +1019,9 @@ impl MacosApp {
     }
 
     pub fn do_callback(event: MacosEvent) {
-        /// Hands the callback back when `do_callback` ends, also when a panic
-        /// unwinds through it to a callback boundary that contains it
-        /// (`shielded` in macos_delegates.rs). The callback owns the Metal
-        /// context and every window's `MacosWindow`, whose addresses Cocoa
-        /// keeps in view and delegate ivars: dropped on the unwind, they were
-        /// freed under AppKit (the next mouse move or layer display wrote into
-        /// the freed blocks) and the app stopped answering every event, quit
-        /// and SIGTERM included.
-        struct Restore(Option<Box<dyn FnMut(MacosEvent) -> EventFlow>>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let mut callback = self.0.take();
-                if try_with_macos_app(|app| app.event_callback = callback.take()).is_none() {
-                    // Leaked rather than dropped: never free those under AppKit.
-                    std::mem::forget(callback);
-                }
-            }
-        }
         let cb = with_macos_app(|app| app.event_callback.take());
-        if let Some(callback) = cb {
-            let mut callback = Restore(Some(callback));
-            let event_flow = (callback.0.as_mut().unwrap())(event);
+        if let Some(mut callback) = cb {
+            let event_flow = callback(event);
             let should_terminate = with_macos_app(|app| {
                 app.event_flow = event_flow;
                 event_flow == EventFlow::Exit && !app.terminating_from_app_delegate
@@ -1055,6 +1032,7 @@ impl MacosApp {
                     let () = msg_send![ns_app, terminate: nil];
                 }
             }
+            with_macos_app(|app| app.event_callback = Some(callback));
         }
     }
 
@@ -1096,7 +1074,6 @@ impl MacosApp {
             if *window == native_window {
                 unsafe {
                     let () = msg_send![*link, invalidate];
-                    let () = msg_send![*link, release];
                 }
                 false
             } else {
@@ -1107,16 +1084,6 @@ impl MacosApp {
             self.stop_timer(0);
             self.start_timer(0, 0.2, true);
         }
-    }
-
-    /// No `NSView.displayLink` fires while every window sits in the Dock, so
-    /// the paint clock has to fall back to the NSTimer.
-    pub fn all_windows_miniaturized(&self) -> bool {
-        !self.cocoa_windows.is_empty()
-            && self.cocoa_windows.iter().all(|(window, _)| unsafe {
-                let miniaturized: bool = msg_send![*window, isMiniaturized];
-                miniaturized
-            })
     }
 
     /// True when link pacing SHOULD be re-armed: a window exists without
@@ -1397,29 +1364,8 @@ impl MacosApp {
                         invalidateCursorRectsForView: *view
                     ];
                 }
-                // Cursor rects don't apply while a mouse button is held, so a visible cursor
-                // requested then, and the first one requested after the release, is set directly.
-                let buttons: u64 = msg_send![class!(NSEvent), pressedMouseButtons];
-                if buttons != 0 || self.cursor_set_directly {
-                    let native_cursor = self.native_cursor(cursor);
-                    if cursor != MouseCursor::Hidden && !native_cursor.is_null() {
-                        let () = msg_send![native_cursor, set];
-                        self.cursor_set_directly = buttons != 0;
-                    }
-                }
             }
         }
-    }
-
-    /// Returns the NSCursor for `cursor`, loading and retaining it on first use.
-    pub fn native_cursor(&mut self, cursor: MouseCursor) -> ObjcId {
-        *self.cursors.entry(cursor).or_insert_with(|| {
-            let id = load_mouse_cursor(cursor);
-            if !id.is_null() {
-                let _: ObjcId = unsafe { msg_send![id, retain] };
-            }
-            id
-        })
     }
 
     /// Arm (or resume) display-link pacing: one CADisplayLink per window via
@@ -1434,7 +1380,6 @@ impl MacosApp {
                     true
                 } else {
                     let () = msg_send![*link, invalidate];
-                    let () = msg_send![*link, release];
                     false
                 }
             });
@@ -1487,11 +1432,6 @@ impl MacosApp {
                 if link == nil {
                     continue;
                 }
-                // Our own reference, released after `invalidate`: the view's
-                // is gone once AppKit closes the window, which happens before
-                // the deferred WindowClosed retires it (macOS 15 aborted on
-                // the freed link's lock when the last window closed).
-                let () = msg_send![link, retain];
                 let nsrunloop: ObjcId = msg_send![class!(NSRunLoop), mainRunLoop];
                 let () = msg_send![link, addToRunLoop: nsrunloop forMode: NSRunLoopCommonModes];
                 if self.display_links_paused {

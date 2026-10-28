@@ -14,8 +14,7 @@
 //!
 //! ### Decoding GIF files
 //!
-//! ```rust,no_run
-//! # extern crate makepad_gif as gif;
+//! ```rust
 //! // Open the file
 //! use std::fs::File;
 //! let mut decoder = gif::DecodeOptions::new();
@@ -35,8 +34,7 @@
 //!
 //! The encoder can be used so save simple computer generated images:
 //!
-//! ```rust,no_run
-//! # extern crate makepad_gif as gif;
+//! ```rust
 //! use gif::{Frame, Encoder, Repeat};
 //! use std::fs::File;
 //! use std::borrow::Cow;

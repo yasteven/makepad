@@ -41,18 +41,7 @@ pub fn init_tvos_app_global(
 }
 
 pub fn get_tvos_app_global() -> std::cell::RefMut<'static, TvosApp> {
-    // The initialized cell is shared; RefCell guards the app's mutable borrow.
-    unsafe { (*std::ptr::addr_of!(TVOS_APP)).as_ref().unwrap().borrow_mut() }
-}
-
-/// The Metal device the app was started with. `None` before the app global
-/// exists, while it is mutably borrowed, or when the device is null: the same
-/// contract as `ios_app::try_metal_device`, which the texture adopt path
-/// calls from wherever a decoded frame lands.
-pub fn try_metal_device() -> Option<ObjcId> {
-    let app = unsafe { (*std::ptr::addr_of!(TVOS_APP)).as_ref()? };
-    let app = app.try_borrow().ok()?;
-    (!app.metal_device.is_null()).then_some(app.metal_device)
+    unsafe { TVOS_APP.as_mut().unwrap().borrow_mut() }
 }
 
 pub fn get_tvos_class_global() -> &'static TvosClasses {

@@ -18,13 +18,10 @@ pub fn retained_upload_limit() -> usize {
     const PROBE_BYTES: usize = 4 * 1024 * 1024;
     let source = vec![0x5au8; PROBE_BYTES];
     let mut destination = vec![0u8; PROBE_BYTES];
-    // std has no clock on wasm32-unknown-unknown (Instant::now panics,
-    // "time not implemented on this platform", and took every web app down
-    // at its first frame): the browser's performance.now() there.
     #[cfg(target_arch = "wasm32")]
     let start = crate::Cx::monotonic_now();
     #[cfg(not(target_arch = "wasm32"))]
-    let start = std::time::Instant::now();
+    let start = crate::sols_browser_time::Instant::now();
     destination.copy_from_slice(std::hint::black_box(&source));
     std::hint::black_box(&destination);
     #[cfg(target_arch = "wasm32")]
@@ -377,9 +374,9 @@ impl RetainedAllocationBudget {
     /// Extra bounded sweeps while released records are queued. Every upload of
     /// a draw item's instances leaves one released record behind and a pan
     /// re-uploads hundreds of items per frame, so one 64-record sweep per
-    /// frame lets the backlog, and the retirement work it keeps waking up for,
-    /// outlast the interaction by tens of seconds. Each call stays within
-    /// `collect`'s bound; `max_calls` caps the frame's total.
+    /// frame lets the backlog (and the retirement repaints it asks for) outlast
+    /// the interaction by tens of seconds. Each call stays within `collect`'s
+    /// bound; `max_calls` caps the frame's total.
     pub fn collect_backlog(&mut self, frame: u64, completed: u64, max_calls: usize) {
         if self.collected_backlog_frame == Some(frame) {
             return;
@@ -1117,7 +1114,7 @@ mod upload_tests {
         {
             budget.begin_frame(frames);
             let bytes = publication.byte_len();
-            let start = std::time::Instant::now();
+            let start = crate::sols_browser_time::Instant::now();
             copied.copy_from_slice(publication.data());
             budget.copied(bytes, 64, start.elapsed());
             budget.begin_frame(frames);

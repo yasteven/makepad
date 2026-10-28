@@ -30,7 +30,7 @@ use {
     },
     std::ptr,
     std::sync::mpsc,
-    std::time::Instant,
+    crate::sols_browser_time::Instant,
 };
 
 #[cfg(use_vulkan)]
@@ -192,8 +192,8 @@ impl Cx {
             .is_some();
         for draw_pass_id in &passes_todo {
             let uniforms_gen = self.next_uniform_gen();
-            let time = self.pass_time(self.os.timers.time_now());
-            self.passes[*draw_pass_id].set_time(time, uniforms_gen);
+            self.passes[*draw_pass_id]
+                .set_time(self.os.timers.time_now() as f32, uniforms_gen);
             match self.passes[*draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {
                     #[cfg(use_vulkan)]
@@ -248,15 +248,6 @@ impl Cx {
         #[cfg(use_vulkan)]
         {
             self.os.xr_render_cpu_time_ms = saw_xr_vulkan_pass.then_some(xr_render_cpu_ms);
-        }
-        // Offscreen passes without an XR view after them stay recorded in the
-        // repaint slot until submitted.
-        #[cfg(all(use_vulkan, target_os = "android"))]
-        if let Some(mut vulkan) = self.os.vulkan.take() {
-            if let Err(err) = vulkan.end_repaint() {
-                crate::error!("Android Vulkan repaint submit failed: {err}");
-            }
-            self.os.vulkan = Some(vulkan);
         }
         #[cfg(not(use_vulkan))]
         {

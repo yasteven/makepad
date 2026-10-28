@@ -1131,7 +1131,7 @@ impl XrUuid {
         uid
     }
     pub fn generate() -> Self {
-        let bytes = LiveId::from_str(&format!("{:?}", std::time::SystemTime::now()))
+        let bytes = LiveId::from_str(&format!("{:?}", crate::sols_browser_time::SystemTime::now()))
             .0
             .to_be_bytes();
         Self::from_bytes(&bytes)

@@ -6,10 +6,7 @@ use {
     crate::{
         area::Area,
         cx::AndroidParams,
-        event::{
-            BackGestureEdge, BackGestureState, SelectionHandleKind, SelectionHandlePhase,
-            TouchPoint, TouchState, VideoSource,
-        },
+        event::{SelectionHandleKind, SelectionHandlePhase, TouchPoint, TouchState, VideoSource},
         ime::{AutoCapitalize, AutoCorrect, InputMode, ReturnKeyType, TextInputConfig},
         makepad_live_id::*,
         makepad_math::*,
@@ -18,10 +15,7 @@ use {
     },
     makepad_android_state::{get_activity, get_java_vm},
     std::ffi::c_uint,
-    std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Condvar, Mutex,
-    },
+    std::sync::{Arc, Condvar, Mutex},
     std::time::Duration,
     std::{
         cell::Cell,
@@ -98,14 +92,6 @@ pub enum FromJavaMessage {
     Init(AndroidParams),
     SwitchedActivity(jni_sys::jobject, u64),
     BackPressed,
-    BackGesture {
-        state: BackGestureState,
-        // Physical px, like touches.
-        abs: Option<Vec2d>,
-        progress: f64,
-        edge: BackGestureEdge,
-        time: f64,
-    },
     SurfaceChanged {
         window: *mut ndk_sys::ANativeWindow,
         width: i32,
@@ -129,9 +115,6 @@ pub enum FromJavaMessage {
         time: f64,
     },
     Touch(Vec<TouchPoint>),
-    /// `ACTION_CANCEL`: the system took every pointer away; each is a Stop
-    /// dispatched as a cancellation.
-    TouchCancel(Vec<TouchPoint>),
     Character {
         character: u32,
     },
@@ -492,10 +475,6 @@ pub unsafe fn apply_studio_env_from_activity(activity: *const std::ffi::c_void) 
 
 pub unsafe fn attach_jni_env() -> *mut jni_sys::JNIEnv {
     let mut env: *mut jni_sys::JNIEnv = std::ptr::null_mut();
-    // A hosted child process (android_hosted.rs) has no JVM at all.
-    if get_java_vm().is_null() {
-        return env;
-    }
     let attach_current_thread = (**get_java_vm()).AttachCurrentThread.unwrap();
 
     let res = attach_current_thread(get_java_vm(), &mut env, std::ptr::null_mut());
@@ -597,8 +576,6 @@ static mut CHOREOGRAPHER_POST_CALLBACK_FN: Option<
     ) -> i32,
 > = None;
 
-static IS_RENDER_LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
-
 /// Initializes the render loop which used the Android Choreographer when available to ensure proper vsync.
 /// If `no_android_choreographer` is present (e.g. OHOS with non-compatiblity), we fallback to a simple loop with frame pacing.
 /// This will be replaced by proper a vsync mechanism once we firgure it out for that OHOS.
@@ -610,10 +587,6 @@ pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_initChoreographe
     device_refresh_rate: jni_sys::jfloat,
     sdk_version: jni_sys::jint,
 ) {
-    // A recreated activity calls this again while the running app's loop keeps going.
-    if IS_RENDER_LOOP_RUNNING.swap(true, Ordering::SeqCst) {
-        return;
-    }
     // If the Choreographer is not available (e.g. OHOS), use a manual render loop
     #[cfg(no_android_choreographer)]
     {
@@ -665,10 +638,8 @@ pub unsafe fn post_vsync_callback() {
     if let Some(post_callback) = CHOREOGRAPHER_POST_CALLBACK_FN {
         if !CHOREOGRAPHER.is_null() && from_java_messages_already_set() {
             post_callback(CHOREOGRAPHER, Some(vsync_callback), std::ptr::null_mut());
-            return;
         }
     }
-    IS_RENDER_LOOP_RUNNING.store(false, Ordering::SeqCst);
 }
 
 /// Fallback render loop used when the Android Choreographer isn't available
@@ -676,7 +647,7 @@ pub unsafe fn post_vsync_callback() {
 /// thread paces frames manually, since there is no system vsync callback.
 fn init_simple_render_loop(device_refresh_rate: f32) {
     std::thread::spawn(move || {
-        let mut last_frame_time = std::time::Instant::now();
+        let mut last_frame_time = crate::sols_browser_time::Instant::now();
         let target_frame_time = std::time::Duration::from_secs_f32(1.0 / device_refresh_rate);
         loop {
             // Exit the thread once the app has shut down and the Java->native
@@ -698,19 +669,14 @@ fn init_simple_render_loop(device_refresh_rate: f32) {
             // shutdown. The check is at the top of the loop, before the send,
             // so a shutdown during the sleep produces no stray send.
             if !from_java_messages_already_set() {
-                IS_RENDER_LOOP_RUNNING.store(false, Ordering::SeqCst);
-                // A new app may have started just now and seen us still running,
-                // so keep feeding it unless it already spawned its own loop.
-                if !from_java_messages_already_set() || IS_RENDER_LOOP_RUNNING.swap(true, Ordering::SeqCst) {
-                    break;
-                }
+                break;
             }
 
-            let now = std::time::Instant::now();
+            let now = crate::sols_browser_time::Instant::now();
             let elapsed = now - last_frame_time;
 
             if elapsed >= target_frame_time {
-                let frame_start = std::time::Instant::now();
+                let frame_start = crate::sols_browser_time::Instant::now();
                 send_from_java_message(FromJavaMessage::RenderLoop);
                 let frame_duration = frame_start.elapsed();
 
@@ -737,8 +703,7 @@ pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onAndroidParams(
     is_emulator: jni_sys::jboolean,
     android_version: jni_sys::jstring,
     build_number: jni_sys::jstring,
-    // Unused, but it keeps this matching `MakepadNative.onAndroidParams` in every cargo-makepad.
-    _kernel_version: jni_sys::jstring,
+    kernel_version: jni_sys::jstring,
 ) {
     send_from_java_message(FromJavaMessage::Init(AndroidParams {
         cache_path: jstring_to_string(env, cache_path),
@@ -747,6 +712,7 @@ pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onAndroidParams(
         is_emulator: is_emulator != 0,
         android_version: jstring_to_string(env, android_version),
         build_number: jstring_to_string(env, build_number),
+        kernel_version: jstring_to_string(env, kernel_version),
         #[cfg(quest)]
         has_xr_mode: true,
         #[cfg(not(quest))]
@@ -761,37 +727,6 @@ unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onBackPressed(
 ) {
     // crate::log!("Java_dev_makepad_android_MakepadNative_onBackPressed");
     send_from_java_message(FromJavaMessage::BackPressed);
-}
-
-#[no_mangle]
-unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onBackGesture(
-    _: *mut jni_sys::JNIEnv,
-    _: jni_sys::jclass,
-    state: jni_sys::jint,
-    touch_x: jni_sys::jfloat,
-    touch_y: jni_sys::jfloat,
-    progress: jni_sys::jfloat,
-    edge: jni_sys::jint,
-    time_millis: jni_sys::jlong,
-) {
-    let state = match state {
-        0 => BackGestureState::Start,
-        1 => BackGestureState::Move,
-        2 => BackGestureState::Cancel,
-        _ => return,
-    };
-    send_from_java_message(FromJavaMessage::BackGesture {
-        state,
-        // NaN means the gesture has no touch point, e.g. a button press.
-        abs: (!touch_x.is_nan() && !touch_y.is_nan()).then(|| dvec2(touch_x as f64, touch_y as f64)),
-        progress: progress as f64,
-        edge: match edge {
-            0 => BackGestureEdge::Left,
-            1 => BackGestureEdge::Right,
-            _ => BackGestureEdge::None,
-        },
-        time: time_millis as f64 / 1000.0,
-    });
 }
 
 #[no_mangle]
@@ -917,59 +852,15 @@ pub extern "C" fn Java_dev_makepad_android_MakepadNative_surfaceOnLongClick(
 #[no_mangle]
 pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_surfaceOnTouch(
     env: *mut jni_sys::JNIEnv,
-    class: jni_sys::jclass,
-    event: jni_sys::jobject,
-) {
-    let time = unsafe { ndk_utils::call_long_method!(env, event, "getEventTime", "()J") } as i64;
-    unsafe { surface_on_touch(env, class, event, time as f64 / 1000.0) };
-}
-
-/// The event with its nanosecond time.
-#[no_mangle]
-pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_surfaceOnTouchNanos(
-    env: *mut jni_sys::JNIEnv,
-    class: jni_sys::jclass,
-    event: jni_sys::jobject,
-    time_nanos: jni_sys::jlong,
-) {
-    unsafe { surface_on_touch(env, class, event, time_nanos as f64 / 1.0e9) };
-}
-
-/// One of a move's batched samples: every pointer where it was then.
-#[no_mangle]
-pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_surfaceOnTouchHistory(
-    env: *mut jni_sys::JNIEnv,
     _: jni_sys::jclass,
     event: jni_sys::jobject,
-    history: jni_sys::jint,
-    time_nanos: jni_sys::jlong,
 ) {
-    let touch_count = unsafe { ndk_utils::call_int_method!(env, event, "getPointerCount", "()I") };
-    let mut touches = Vec::with_capacity(touch_count as usize);
-    for touch_index in 0..touch_count {
-        let id = unsafe { ndk_utils::call_int_method!(env, event, "getPointerId", "(I)I", touch_index) };
-        let x = unsafe { ndk_utils::call_float_method!(env, event, "getHistoricalX", "(II)F", touch_index, history) };
-        let y = unsafe { ndk_utils::call_float_method!(env, event, "getHistoricalY", "(II)F", touch_index, history) };
-        touches.push(TouchPoint {
-            state: TouchState::Move,
-            uid: id as u64,
-            rotation_angle: 0.0,
-            force: 1.0,
-            radius: dvec2(0.0, 0.0),
-            handled: Cell::new(Area::Empty),
-            sweep_lock: Cell::new(Area::Empty),
-            abs: dvec2(x as f64, y as f64),
-            time: time_nanos as f64 / 1.0e9,
-        });
-    }
-    send_from_java_message(FromJavaMessage::Touch(touches));
-}
-
-unsafe fn surface_on_touch(env: *mut jni_sys::JNIEnv, _: jni_sys::jclass, event: jni_sys::jobject, time_secs: f64) {
     let action_masked =
         unsafe { ndk_utils::call_int_method!(env, event, "getActionMasked", "()I") };
     let action_index = unsafe { ndk_utils::call_int_method!(env, event, "getActionIndex", "()I") };
     let touch_count = unsafe { ndk_utils::call_int_method!(env, event, "getPointerCount", "()I") };
+
+    let time = unsafe { ndk_utils::call_long_method!(env, event, "getEventTime", "()J") } as i64;
 
     let mut touches = Vec::with_capacity(touch_count as usize);
     for touch_index in 0..touch_count {
@@ -996,10 +887,7 @@ unsafe fn surface_on_touch(env: *mut jni_sys::JNIEnv, _: jni_sys::jclass, event:
 
         touches.push(TouchPoint {
             state: {
-                if action_masked == 3 {
-                    // ACTION_CANCEL ends every pointer of the gesture.
-                    TouchState::Stop
-                } else if action_index == touch_index {
+                if action_index == touch_index {
                     match action_masked {
                         0 | 5 => TouchState::Start,
                         1 | 6 => TouchState::Stop,
@@ -1017,14 +905,10 @@ unsafe fn surface_on_touch(env: *mut jni_sys::JNIEnv, _: jni_sys::jclass, event:
             handled: Cell::new(Area::Empty),
             sweep_lock: Cell::new(Area::Empty),
             abs: dvec2(x as f64, y as f64),
-            time: time_secs,
+            time: time as f64 / 1000.0,
         });
     }
-    send_from_java_message(if action_masked == 3 {
-        FromJavaMessage::TouchCancel(touches)
-    } else {
-        FromJavaMessage::Touch(touches)
-    });
+    send_from_java_message(FromJavaMessage::Touch(touches));
 }
 
 #[no_mangle]
@@ -1622,55 +1506,7 @@ pub unsafe fn to_java_switch_activity(env: *mut jni_sys::JNIEnv) {
     ndk_utils::call_void_method!(env, get_activity(), "switchActivity", "()V");
 }
 
-pub fn load_asset(filepath: &str) -> Option<Vec<u8>> {
-    unsafe { to_java_load_asset(filepath) }
-}
-
-/// An APK asset read in pieces (`AASSET_MODE_STREAMING`), so an asset of
-/// hundreds of megabytes never sits in memory whole. Closed on drop.
-pub struct AssetReader {
-    asset: *mut ndk_sys::AAsset,
-    len: u64,
-}
-
-impl AssetReader {
-    /// The asset's size in bytes.
-    pub fn len(&self) -> u64 {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-impl std::io::Read for AssetReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let n = unsafe { ndk_sys::AAsset_read(self.asset, buf.as_mut_ptr() as *mut _, buf.len()) };
-        if n < 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "AAsset_read failed"));
-        }
-        Ok(n as usize)
-    }
-}
-
-impl Drop for AssetReader {
-    fn drop(&mut self) {
-        unsafe { ndk_sys::AAsset_close(self.asset) };
-    }
-}
-
-/// Open an asset for streaming reads; None when the APK has no such file.
-pub fn open_asset(filepath: &str) -> Option<AssetReader> {
-    let (asset, len) = unsafe { open_raw_asset(filepath, ndk_sys::AASSET_MODE_STREAMING)? };
-    Some(AssetReader { asset, len: len.max(0) as u64 })
-}
-
-/// The activity's AssetManager, then `AAssetManager_open`.
-unsafe fn open_raw_asset(filepath: &str, mode: ::std::os::raw::c_uint) -> Option<(*mut ndk_sys::AAsset, i64)> {
+pub(crate) unsafe fn to_java_load_asset(filepath: &str) -> Option<Vec<u8>> {
     let env = attach_jni_env();
 
     let get_method_id = (**env).GetMethodID.unwrap();
@@ -1685,25 +1521,21 @@ unsafe fn open_raw_asset(filepath: &str, mode: ::std::os::raw::c_uint) -> Option
     );
     let asset_manager = (call_object_method)(env, get_activity(), mid);
     let mgr = ndk_sys::AAssetManager_fromJava(env, asset_manager);
-    let file_path = CString::new(filepath).ok()?;
-    let asset = ndk_sys::AAssetManager_open(mgr, file_path.as_ptr(), mode as _);
+    let file_path = CString::new(filepath).unwrap();
+    let asset =
+        ndk_sys::AAssetManager_open(mgr, file_path.as_ptr(), ndk_sys::AASSET_MODE_BUFFER as _);
     if asset.is_null() {
         return None;
     }
     let length = ndk_sys::AAsset_getLength64(asset);
-    Some((asset, length))
-}
 
-pub(crate) unsafe fn to_java_load_asset(filepath: &str) -> Option<Vec<u8>> {
-    if super::android_hosted::is_hosted() {
-        return super::android_hosted::load_asset(filepath);
-    }
-    let (asset, length) = open_raw_asset(filepath, ndk_sys::AASSET_MODE_BUFFER)?;
     let mut buffer = Vec::new();
-    buffer.resize(length.max(0) as usize, 0u8);
-    let ok = length == 0 || ndk_sys::AAsset_read(asset, buffer.as_mut_ptr() as *mut _, length as _) > 0;
-    ndk_sys::AAsset_close(asset);
-    ok.then_some(buffer)
+    buffer.resize(length as usize, 0u8);
+    if ndk_sys::AAsset_read(asset, buffer.as_ptr() as *mut _, length as _) > 0 {
+        ndk_sys::AAsset_close(asset);
+        return Some(buffer);
+    }
+    return None;
 }
 
 pub unsafe fn to_java_show_keyboard(visible: bool) {
@@ -1722,42 +1554,6 @@ pub unsafe fn to_java_copy_to_clipboard(content: String) {
         "(Ljava/lang/String;)V",
         content
     );
-}
-
-/// `MakepadActivity.openUrl`: an ACTION_VIEW Intent for `url`.
-pub unsafe fn to_java_open_url(url: &str) {
-    let env = attach_jni_env();
-    let Ok(url) = CString::new(url) else { return };
-    let url = ((**env).NewStringUTF.unwrap())(env, url.as_ptr());
-    ndk_utils::call_void_method!(env, get_activity(), "openUrl", "(Ljava/lang/String;)V", url);
-    (**env).DeleteLocalRef.unwrap()(env, url);
-}
-
-/// `MakepadActivity.performHaptic`: a system haptic (`kind`: 0 click,
-/// 1 virtual key, 2 tick) on the activity's window.
-pub unsafe fn to_java_haptic(kind: i32) {
-    let env = attach_jni_env();
-    ndk_utils::call_void_method!(env, get_activity(), "performHaptic", "(I)V", kind as jni_sys::jint);
-}
-
-/// `MakepadActivity.copyContentUri`: the bytes of a picked `content://`
-/// document into the plain file `dest`.
-pub unsafe fn to_java_copy_content_uri(uri: &str, dest: &str) -> bool {
-    let env = attach_jni_env();
-    let (Ok(uri), Ok(dest)) = (CString::new(uri), CString::new(dest)) else { return false };
-    let uri = ((**env).NewStringUTF.unwrap())(env, uri.as_ptr());
-    let dest = ((**env).NewStringUTF.unwrap())(env, dest.as_ptr());
-    let ok = ndk_utils::call_bool_method!(
-        env,
-        get_activity(),
-        "copyContentUri",
-        "(Ljava/lang/String;Ljava/lang/String;)Z",
-        uri,
-        dest
-    );
-    (**env).DeleteLocalRef.unwrap()(env, uri);
-    (**env).DeleteLocalRef.unwrap()(env, dest);
-    ok != 0
 }
 
 pub unsafe fn to_java_paste_from_clipboard() -> String {
@@ -2041,11 +1837,6 @@ pub unsafe fn to_java_socket_stream_close(stream_id: LiveId) {
 pub fn to_java_get_audio_devices(flag: jni_sys::jlong) -> Vec<String> {
     unsafe {
         let env = attach_jni_env();
-        // A hosted child process has no JVM to list devices with; AAudio
-        // still opens the default device.
-        if env.is_null() {
-            return Vec::new();
-        }
         let string_array = ndk_utils::call_object_method!(
             env,
             get_activity(),

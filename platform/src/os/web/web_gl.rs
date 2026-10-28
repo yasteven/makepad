@@ -34,6 +34,19 @@ impl Cx {
                 .load(std::sync::atomic::Ordering::Acquire),
         );
 
+        // Match native OpenGL's bounded backlog service. A redraw can replace
+        // hundreds of instance buffers; a single 64-record sweep per frame
+        // cannot keep up. The budget grants these extra sweeps once per frame.
+        self.draw_lists.1.allocations.collect_backlog(
+            self.repaint_id,
+            self.textures
+                .1
+                .serials
+                .completed
+                .load(std::sync::atomic::Ordering::Acquire),
+            8,
+        );
+
         let mut array_buffer_ids = Vec::new();
         let mut index_buffer_ids = Vec::new();
         let mut vao_ids = Vec::new();
@@ -100,8 +113,6 @@ impl Cx {
             pass.paint_dirty = false;
             pass.live_with_parent = false;
             pass.repaint_requested = false;
-            pass.repaint_next = false;
-            pass.time_owed = false;
             pass.os.flipped_uniforms = None;
         }
 
@@ -226,6 +237,10 @@ impl Cx {
                     continue;
                 }
 
+                if sh.mapping.uses_time {
+                    self.demo_time_repaint = true;
+                }
+
                 if (draw_call.instance_dirty
                     || draw_item.os.inst_vb_id.is_none()
                     || draw_item.retained_gpu_evicted)
@@ -280,7 +295,6 @@ impl Cx {
                         let Some(charge) = upload_budget.allocations.reserve(capacity) else {
                             draw_item.instance_upload_pending = true;
                             self.demo_time_repaint = true;
-                            self.passes[draw_pass_id].repaint_next = true;
                             continue;
                         };
                         draw_item.os.inst_capacity = capacity;
@@ -743,10 +757,6 @@ impl Cx {
                     .kind
                     .draw_call()
                     .map_or(0, |call| call.uniforms_gen);
-                if sh.mapping.uses_time {
-                    self.demo_time_repaint = true;
-                    self.passes[draw_pass_id].repaint_next = true;
-                }
             }
         }
         /*

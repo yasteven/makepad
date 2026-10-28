@@ -8,17 +8,16 @@ use crate::{
     thread::{to_ui_bounded, TaskHandle, ThreadOptions, ThreadSpawner, ToUIReceiver, ToUISender},
 };
 #[cfg(linux_direct)]
-use std::{
-    fs::File,
-    num::NonZeroUsize,
-    os::fd::AsRawFd,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::{Duration, Instant},
-};
+use std::fs::File;
+use std::num::NonZeroUsize;
+use std::os::fd::AsRawFd;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
 
 /// Inactive windows own their WSI resources, while drawing uses the selected
 /// window's resources in CxVulkan. Geometry, textures and pipelines stay shared.
@@ -156,15 +155,12 @@ impl DesktopInit {
         let instance = self.instance.as_ref().unwrap();
         let mut devices = unsafe { instance.enumerate_physical_devices() }
             .map_err(|e| format!("enumerate Vulkan devices: {e:?}"))?;
-        let mut software_skipped = 0;
         devices.retain(|device| {
             let properties = unsafe { instance.get_physical_device_properties(*device) };
             if !allow_cpu && properties.device_type == vk::PhysicalDeviceType::CPU {
                 let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) };
-                software_skipped += 1;
-                crate::trace!(
-                    "vulkan.device",
-                    "skipping software device {:?}",
+                crate::log!(
+                    "Vulkan: skipping software device {:?} (MAKEPAD_GPU=vulkan uses it anyway)",
                     name.to_string_lossy()
                 );
                 return false;
@@ -179,17 +175,6 @@ impl DesktopInit {
                     })
                     .unwrap_or(false)
         });
-        // Mesa ships lavapipe nearly everywhere, so stepping over a software
-        // device is routine and stays quiet. Having nothing else is not: every
-        // caller then reports no usable device, which reads as if the machine
-        // had no Vulkan at all rather than no accelerated one. Say why, and
-        // leave what happens next to the caller that decides it.
-        if devices.is_empty() && software_skipped > 0 {
-            crate::log!(
-                "Vulkan: every device present is a software rasterizer \
-                 (MAKEPAD_GPU=vulkan renders on one anyway)"
-            );
-        }
         devices.sort_by_key(|device| device_type_rank(instance, *device));
         Ok(devices)
     }
@@ -281,7 +266,6 @@ impl DesktopInit {
         let props = unsafe { instance.get_physical_device_properties(physical_device) };
         let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) }.to_string_lossy();
         crate::log!("Vulkan: {name}, graphics/present queue {queue_family_index}");
-        crate::system_info::note_gpu_adapter(&name);
         let recycle_pass_resources =
             std::env::var("MAKEPAD_VULKAN_RECYCLE").ok().as_deref() != Some("0");
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
@@ -293,10 +277,6 @@ impl DesktopInit {
                 "Vulkan direct: VK_KHR_present_id/present_wait enabled; acquires wait for the previous present to complete"
             );
         }
-        let pipeline_cache = unsafe {
-            device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)
-        }
-        .unwrap_or_default();
         let mut renderer = CxVulkan {
             frame_serial_in_flight: 0,
             retained_instances: HashMap::new(),
@@ -324,15 +304,11 @@ impl DesktopInit {
             swapchain_format: vk::Format::UNDEFINED,
             depth_format: vk::Format::UNDEFINED,
             swapchain_extent: vk::Extent2D::default(),
-            swapchain_surface_transform: vk::SurfaceTransformFlagsKHR::IDENTITY,
             render_pass: vk::RenderPass::null(),
             xr_render_pass: vk::RenderPass::null(),
             framebuffers: Vec::new(),
             pipelines: HashMap::new(),
-            pipeline_cache,
             offscreen_render_passes: HashMap::new(),
-            offscreen_draw_render_passes: HashMap::new(),
-            offscreen_framebuffers: HashMap::new(),
             geometries: HashMap::new(),
             textures: HashMap::new(),
             frame_resources: FrameResources::default(),
@@ -1143,7 +1119,7 @@ impl CxVulkan {
             Ok(bridge) => bridge,
             Err(error) => {
                 self.destroy_swapchain();
-                self.destroy_uncached_texture_resource(composition);
+                self.destroy_texture_resource(composition);
                 return Err(error);
             }
         };
@@ -1170,7 +1146,7 @@ impl CxVulkan {
         }
         unsafe { output.bridge.destroy(self, display) };
         self.destroy_swapchain();
-        self.destroy_uncached_texture_resource(output.composition);
+        self.destroy_texture_resource(output.composition);
     }
 
     pub(super) fn prepared_gpu_output_idle(
@@ -1216,7 +1192,7 @@ impl CxVulkan {
             // Old framebuffers/views must retire before their composition.
             old.destroy_swapchain();
             if let Some(composition) = routed.composition.take() {
-                old.destroy_uncached_texture_resource(composition);
+                old.destroy_texture_resource(composition);
             }
             (
                 routed.display,
@@ -1960,10 +1936,10 @@ mod uevent {
     // poll(2) and its pollfd come from the crate's existing libc surface
     // (nfds_t is unsigned long on Linux).
     use crate::os::linux::v4l2_sys::{poll, pollfd, POLLIN};
-    use std::{
-        os::raw::{c_int, c_uint, c_void},
-        time::Duration,
-    };
+    use std::os::raw::c_int;
+use std::os::raw::c_uint;
+use std::os::raw::c_void;
+use crate::sols_browser_time::Duration;
 
     #[repr(C)]
     struct SockaddrNl {
@@ -2543,7 +2519,7 @@ impl CxVulkan {
             }
             let composition = self.install_composition_targets(targets);
             if let Some(old) = routed.composition.replace(composition) {
-                self.destroy_uncached_texture_resource(old);
+                self.destroy_texture_resource(old);
             }
             let mut direct = routed.display.desktop.direct.take().unwrap();
             routed
@@ -2998,7 +2974,7 @@ impl CxVulkan {
             .subpass(0);
         let result = unsafe {
             self.device
-                .create_graphics_pipelines(self.pipeline_cache, &[create_info], None)
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[create_info], None)
         };
         unsafe {
             self.device.destroy_shader_module(vertex_module, None);
@@ -3510,15 +3486,15 @@ impl CxVulkan {
         let depth = match self.create_depth_target(extent.width, extent.height, depth_format) {
             Ok(depth) => depth,
             Err(err) => {
-                self.destroy_uncached_texture_resource(resource);
+                self.destroy_texture_resource(resource);
                 return Err(err);
             }
         };
         let render_pass = match self.direct_create_composition_render_pass(depth_format) {
             Ok(render_pass) => render_pass,
             Err(err) => {
-                self.destroy_uncached_texture_resource(depth);
-                self.destroy_uncached_texture_resource(resource);
+                self.destroy_texture_resource(depth);
+                self.destroy_texture_resource(resource);
                 return Err(err);
             }
         };
@@ -3537,8 +3513,8 @@ impl CxVulkan {
             Ok(framebuffer) => framebuffer,
             Err(e) => {
                 unsafe { self.device.destroy_render_pass(render_pass, None) };
-                self.destroy_uncached_texture_resource(depth);
-                self.destroy_uncached_texture_resource(resource);
+                self.destroy_texture_resource(depth);
+                self.destroy_texture_resource(resource);
                 return Err(format!("create composition framebuffer: {e:?}"));
             }
         };
@@ -3553,8 +3529,8 @@ impl CxVulkan {
                     self.device.destroy_framebuffer(framebuffer, None);
                     self.device.destroy_render_pass(render_pass, None);
                 }
-                self.destroy_uncached_texture_resource(depth);
-                self.destroy_uncached_texture_resource(resource);
+                self.destroy_texture_resource(depth);
+                self.destroy_texture_resource(resource);
                 return Err(err);
             }
         };
@@ -3663,7 +3639,7 @@ impl CxVulkan {
         let extent = targets.extent;
         let resource = self.install_composition_targets(targets);
         if let Some(old) = direct.composition.replace(resource) {
-            self.destroy_uncached_texture_resource(old);
+            self.destroy_texture_resource(old);
         }
         direct.desktop_extent = extent;
         direct.composition_epoch += 1;
@@ -3695,8 +3671,8 @@ impl CxVulkan {
             self.device.destroy_buffer(targets.readback.buffer, None);
             self.device.free_memory(targets.readback.memory, None);
         }
-        self.destroy_uncached_texture_resource(targets.depth);
-        self.destroy_uncached_texture_resource(targets.resource);
+        self.destroy_texture_resource(targets.depth);
+        self.destroy_texture_resource(targets.resource);
     }
 
     /// Choose the render source and, when its mode differs from the desktop,
@@ -5300,7 +5276,7 @@ impl CxVulkan {
                 unsafe { bridge.destroy(self, &routed.display) };
             }
             if let Some(composition) = routed.composition.take() {
-                self.destroy_uncached_texture_resource(composition);
+                self.destroy_texture_resource(composition);
             }
             // Presenter Drop releases its WSI resources before either parent.
             drop(routed);
@@ -5365,7 +5341,7 @@ impl CxVulkan {
             }
         }
         if let Some(resource) = direct.composition.take() {
-            self.destroy_uncached_texture_resource(resource);
+            self.destroy_texture_resource(resource);
         }
         if let Some(blit) = direct.blit.take() {
             unsafe {

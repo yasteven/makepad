@@ -208,7 +208,6 @@ pub struct ShaderScope {
 #[derive(Default)]
 pub struct ShaderFnCompiler {
     pub out: String,
-    pub callees: Vec<usize>,
     pub stack: ShaderStack,
     pub script_scope: ScriptObject,
     pub shader_scope: ShaderScope,
@@ -415,6 +414,7 @@ impl ShaderFnCompiler {
         fnip: ScriptIp,
     ) -> ScriptPodType {
         //output.backend = ShaderBackend::Wgsl;
+        output.backend.register_ids();
 
         // Each call site inlines a fresh copy of the callee, so a branching
         // call graph expands exponentially with depth. `recur_block` stops
@@ -582,18 +582,19 @@ impl ShaderFnCompiler {
                         // `self` is a ScopeObject - return it for field access handling
                         return (ShaderType::ScopeObject(*obj), s2);
                     }
-                    match sc {
-                        ShaderScopeItem::Param { .. } => {
-                            output.backend.write_param_name(&mut s2, id, shadow)
-                        }
+                    let scoped_name = match sc {
+                        ShaderScopeItem::Param { .. } => output.backend.map_param_name(id, shadow),
                         ShaderScopeItem::Let { .. } | ShaderScopeItem::Var { .. } => {
-                            output.backend.write_local_name(&mut s2, id, shadow)
+                            output.backend.map_local_name(id, shadow)
                         }
                         ShaderScopeItem::PodType { .. } => {
-                            output.backend.write_local_name(&mut s2, id, shadow)
+                            output.backend.map_local_name(id, shadow)
                         }
-                        ShaderScopeItem::IoSelf(_) | ShaderScopeItem::ScopeObject(_) => {}
-                    }
+                        ShaderScopeItem::IoSelf(_) | ShaderScopeItem::ScopeObject(_) => {
+                            String::new()
+                        }
+                    };
+                    write!(s2, "{}", scoped_name).ok();
                     self.stack.free_string(s);
                     return (ShaderType::Pod(sc.ty()), s2);
                 }
@@ -688,9 +689,14 @@ impl ShaderFnCompiler {
                                 let (_, prefix) = output
                                     .backend
                                     .get_shader_io_kind_and_prefix(output.mode, io_type);
-                                output
-                                    .backend
-                                    .write_prefixed_io_name(&mut s2, &prefix, shader_name);
+                                match prefix {
+                                    ShaderIoPrefix::Prefix(prefix) => {
+                                        let mapped_name = output.backend.map_io_name(shader_name);
+                                        write!(s2, "{}{}", prefix, mapped_name).ok()
+                                    }
+                                    ShaderIoPrefix::Full(full) => write!(s2, "{}", full).ok(),
+                                    ShaderIoPrefix::FullOwned(full) => write!(s2, "{}", full).ok(),
+                                };
 
                                 self.stack.free_string(s);
                                 return (
@@ -763,7 +769,14 @@ impl ShaderFnCompiler {
                         let (_, prefix) = output
                             .backend
                             .get_shader_io_kind_and_prefix(output.mode, SHADER_IO_SCOPE_UNIFORM);
-                        output.backend.write_prefixed_io_name(&mut s2, &prefix, shader_name);
+                        match prefix {
+                            ShaderIoPrefix::Prefix(prefix) => {
+                                let mapped_name = output.backend.map_io_name(shader_name);
+                                write!(s2, "{}{}", prefix, mapped_name).ok()
+                            }
+                            ShaderIoPrefix::Full(full) => write!(s2, "{}", full).ok(),
+                            ShaderIoPrefix::FullOwned(full) => write!(s2, "{}", full).ok(),
+                        };
                         self.stack.free_string(s);
                         return (ShaderType::Pod(pod_ty), s2);
                     }
@@ -1159,7 +1172,14 @@ impl ShaderFnCompiler {
         let (_, prefix) = output
             .backend
             .get_shader_io_kind_and_prefix(output.mode, SHADER_IO_SCOPE_UNIFORM);
-        output.backend.write_prefixed_io_name(&mut s, &prefix, shader_name);
+        match prefix {
+            ShaderIoPrefix::Prefix(prefix) => {
+                let io_name = output.backend.map_io_name(shader_name);
+                write!(s, "{}{}", prefix, io_name).ok()
+            }
+            ShaderIoPrefix::Full(full) => write!(s, "{}", full).ok(),
+            ShaderIoPrefix::FullOwned(full) => write!(s, "{}", full).ok(),
+        };
         s
     }
 
@@ -1183,17 +1203,16 @@ impl ShaderFnCompiler {
         if let Some(id) = value.as_id() {
             let mut s = self.stack.new_string();
             if let Some((sc, shadow)) = self.shader_scope.find_var(id) {
-                match sc {
-                    ShaderScopeItem::Param { .. } => backend.write_param_name(&mut s, id, shadow),
+                let mapped = match sc {
+                    ShaderScopeItem::Param { .. } => backend.map_param_name(id, shadow),
                     ShaderScopeItem::Let { .. }
                     | ShaderScopeItem::Var { .. }
-                    | ShaderScopeItem::PodType { .. } => {
-                        backend.write_local_name(&mut s, id, shadow)
-                    }
+                    | ShaderScopeItem::PodType { .. } => backend.map_local_name(id, shadow),
                     ShaderScopeItem::IoSelf(_) | ShaderScopeItem::ScopeObject(_) => {
-                        write!(s, "{}", id).ok();
+                        format!("{}", id)
                     }
-                }
+                };
+                write!(s, "{}", mapped).ok();
             } else {
                 write!(s, "{}", id).ok();
             }
@@ -1810,12 +1829,9 @@ impl ShaderFnCompiler {
                     if self.stack.types.len() <= *stack_depth {
                         return;
                     }
-                    // A value nothing consumes: an expression statement, or an
-                    // if/else whose branches ended in values (its phi).
-                    let (ty, s) = self.stack.pop(self.trap.pass());
-                    let pod = &vm.bx.code.builtins.pod;
-                    let is_void = ty.make_concrete(pod).map_or(true, |t| t == pod.pod_void);
-                    output.backend.write_discarded_expr(&mut self.out, &s, is_void);
+                    let (_ty, s) = self.stack.pop(self.trap.pass());
+                    self.out.push_str(&s);
+                    self.out.push_str(";\n");
                     self.stack.free_string(s);
                 }
                 ShaderMe::Pod { pod_ty: _, args } => {

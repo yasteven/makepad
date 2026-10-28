@@ -46,8 +46,8 @@ use {
                     WindowsAndMessaging::{
                         DispatchMessageW, GetMessageW, GetSystemMetrics, IsGUIThread,
                         IsProcessDPIAware, KillTimer, LoadCursorW, LoadIconW, LoadImageW,
-                        PeekMessageW, RegisterClassExW, SetCursor, SetTimer, TranslateMessage,
-                        CS_OWNDC, HCURSOR, HICON, IDC_ARROW, IDC_CROSS, IDC_HAND,
+                        PeekMessageW, RegisterClassExW, SetCursor, SetTimer, ShowCursor,
+                        TranslateMessage, CS_OWNDC, HICON, IDC_ARROW, IDC_CROSS, IDC_HAND,
                         IDC_HELP, IDC_IBEAM, IDC_NO, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS,
                         IDC_SIZENWSE, IDC_SIZEWE, IDI_WINLOGO, IMAGE_ICON, LR_DEFAULTCOLOR, MSG,
                         PM_NOREMOVE, PM_REMOVE, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
@@ -256,7 +256,7 @@ unsafe fn msg_wait_for_beat_or_input(handles: &[HANDLE], timeout_ms: u32) -> u32
 /// a small count/time budget, so a flood of high-rate input can never starve the
 /// paint beat. Returns false if a dispatched message asked the app to exit.
 unsafe fn drain_messages() -> bool {
-    let drain_start = std::time::Instant::now();
+    let drain_start = crate::sols_browser_time::Instant::now();
     let mut drain_budget = 32;
     loop {
         let mut msg = std::mem::MaybeUninit::uninit();
@@ -291,23 +291,15 @@ pub struct Win32App {
     pub event_flow: EventFlow,
     pub dpi_functions: DpiFunctions,
     pub current_cursor: Option<MouseCursor>,
-    /// The cursor WM_SETCURSOR re-applies over the client area.
-    pub requested_cursor: MouseCursor,
-    /// The system cursor for `requested_cursor`, or `None` while it is hidden.
-    requested_hcursor: Option<HCURSOR>,
-    /// The window whose client area last received WM_SETCURSOR.
-    pub cursor_hwnd: Option<HWND>,
     pub currently_clicked_window_id: Option<WindowId>,
     pub start_dragging_items: Option<Vec<DragItem>>,
     pub is_dragging_internal: Cell<bool>,
-    /// The paint beat: one DXGI frame-latency waitable per vsync-paced window.
-    /// Registered by `D3d11Window::new`, dropped on window teardown and while a
-    /// window is in a live resize (which presents unpaced). No window owns the
-    /// app clock: whichever beat first reaches a new flip steps it (`windows.rs`).
+    /// The paint beat: one DXGI frame-latency waitable per vsync-paced window,
+    /// in registration order — index 0 is the *primary* window, whose beat drives
+    /// the whole app tick (the macOS backend picks its primary display link the
+    /// same way). Registered by `D3d11Window::new`, dropped on window teardown
+    /// and while a window is in a live resize (which presents unpaced).
     pub beat_handles: Vec<BeatSource>,
-    /// Counts the beats served, so the wait can put the window served longest
-    /// ago first (`BeatSource::served`).
-    pub beat_serial: u64,
     /// How long the beat wait may block before falling back to an unpaced tick.
     /// The waitable is a credit semaphore refilled by *retired presents*, so a
     /// stretch of ticks that present nothing (a NextFrame listener that dirties
@@ -336,14 +328,6 @@ pub struct BeatSource {
     /// wait until a frame is presented: the compositor is already ready for that
     /// window, so there is nothing left to wait for.
     pub credit_held: bool,
-    /// `beat_serial` when this window's beat was last served. The wait lists
-    /// the least recently served window first, because a multi-object wait
-    /// reports the LOWEST signaled index: with a fixed order, a first window
-    /// that is ready again every time the loop comes back to wait (any app
-    /// whose frame takes longer than a refresh) won every wait, and a second
-    /// window never got a beat — its passes were held back for good and it
-    /// only repainted while a modal move loop ran unscoped ticks.
-    pub served: u64,
 }
 
 /// Beat timeout after a tick that actually presented: ~2 refresh intervals at
@@ -445,13 +429,9 @@ impl Win32App {
             timers: Vec::new(),
             dpi_functions: DpiFunctions::new(),
             current_cursor: None,
-            requested_cursor: MouseCursor::Default,
-            requested_hcursor: Self::load_cursor(MouseCursor::Default),
-            cursor_hwnd: None,
             currently_clicked_window_id: None,
             is_dragging_internal: Cell::new(false),
             beat_handles: Vec::new(),
-            beat_serial: 0,
             beat_timeout_ms: BEAT_TIMEOUT_PRESENTED_MS,
             frame_trace: crate::frame_trace::FrameTrace::new(),
         };
@@ -590,7 +570,7 @@ impl Win32App {
                         // budget) without painting: a moving mouse injects WM_MOUSEMOVE at
                         // 500–1000 Hz and must never outvote the frame clock, but neither may it
                         // starve — hence the budget, and hence the loop coming straight back here.
-                        let beats: Vec<(WindowId, HANDLE)> =
+                        let beats: Vec<(WindowId, HANDLE, bool)> =
                             with_win32_app(|app| app.beat_wait_list());
                         if beats.is_empty() {
                             // Nothing to wait for: popup-only, a live resize (which presents
@@ -609,24 +589,27 @@ impl Win32App {
                                 Win32App::do_callback(Win32Event::Paint);
                             }
                         } else {
-                            let handles: Vec<HANDLE> = beats.iter().map(|(_, h)| *h).collect();
+                            let handles: Vec<HANDLE> = beats.iter().map(|(_, h, _)| *h).collect();
                             let timeout = with_win32_app(|app| app.beat_timeout_ms).max(1);
                             let count = handles.len() as u32;
                             let ret = msg_wait_for_beat_or_input(&handles, timeout);
                             if ret < count {
-                                let (window_id, _) = beats[ret as usize];
+                                let (window_id, _, primary) = beats[ret as usize];
                                 // The wait consumed one of that swap chain's credits. Record
                                 // it: it can only be given back by presenting a frame.
                                 let time = with_win32_app(|app| {
                                     app.take_beat_credit(window_id);
-                                    app.mark_beat_served(window_id);
                                     app.time_now()
                                 });
                                 // The flip this beat aims at is only known once the window's
                                 // frame statistics are read (windows.rs): the source is noted
                                 // here, the lead there.
                                 with_win32_app(|app| app.frame_trace.tick(TickSource::Waitable, time, None));
-                                Win32App::do_callback(Win32Event::Beat { window_id, time });
+                                Win32App::do_callback(Win32Event::Beat {
+                                    window_id,
+                                    time,
+                                    primary,
+                                });
                             } else if ret == count {
                                 let _ = drain_messages();
                             } else {
@@ -834,8 +817,10 @@ impl Win32App {
         }
     }
 
-    /// Register a window's DXGI frame-latency waitable as a beat source.
-    /// Re-registering the same window replaces its handle in place.
+    /// Register a window's DXGI frame-latency waitable as a beat source. The
+    /// first window registered becomes the primary: its beat runs the full app
+    /// tick. Re-registering the same window replaces its handle in place, so a
+    /// resize round-trip keeps the primary slot it had.
     pub fn register_beat_handle(&mut self, window_id: WindowId, handle: HANDLE, credit_held: bool) {
         if let Some(entry) = self
             .beat_handles
@@ -850,7 +835,6 @@ impl Win32App {
             window_id,
             handle,
             credit_held,
-            served: 0,
         });
     }
 
@@ -859,13 +843,14 @@ impl Win32App {
     }
 
     /// The windows to wait on this pass: everything registered that is not
-    /// already holding an unspent credit, the least recently served first
-    /// (see `BeatSource::served`).
-    fn beat_wait_list(&self) -> Vec<(WindowId, HANDLE)> {
-        let mut waiting: Vec<&BeatSource> =
-            self.beat_handles.iter().filter(|b| !b.credit_held).collect();
-        waiting.sort_by_key(|b| b.served);
-        waiting.iter().map(|b| (b.window_id, b.handle)).collect()
+    /// already holding an unspent credit, tagged with whether it is the primary.
+    fn beat_wait_list(&self) -> Vec<(WindowId, HANDLE, bool)> {
+        self.beat_handles
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.credit_held)
+            .map(|(i, b)| (b.window_id, b.handle, i == 0))
+            .collect()
     }
 
     /// A wait on this window's waitable succeeded: we now hold one credit.
@@ -876,19 +861,6 @@ impl Win32App {
             .find(|b| b.window_id == window_id)
         {
             b.credit_held = true;
-        }
-    }
-
-    /// The beat wait woke on this window: it goes to the back of the wait order.
-    fn mark_beat_served(&mut self, window_id: WindowId) {
-        self.beat_serial += 1;
-        let serial = self.beat_serial;
-        if let Some(b) = self
-            .beat_handles
-            .iter_mut()
-            .find(|b| b.window_id == window_id)
-        {
-            b.served = serial;
         }
     }
 
@@ -930,7 +902,6 @@ impl Win32App {
             if items.len() > 1 {
                 error!("multi-item drag/drop operation not supported");
             }
-            let mut ran = false;
             match &items[0] {
                 DragItem::FilePath { path, internal_id } => {
                     //log!("win32: about to drag path \"{}\" with internal ID {:?}", path, internal_id);
@@ -957,16 +928,13 @@ impl Win32App {
                                 &mut effect,
                             )
                         } {
-                            DRAGDROP_S_DROP | DRAGDROP_S_CANCEL => ran = true,
+                            DRAGDROP_S_DROP => { /*log!("DoDragDrop: succesful")*/ }
+                            DRAGDROP_S_CANCEL => { /*log!("DoDragDrop: canceled")*/ }
                             _ => {
                                 log!("DoDragDrop: failed for some reason")
                             }
                         }
-                        with_win32_app(|app| {
-                            app.is_dragging_internal.replace(false);
-                            // OLE's last drag cursor is still showing, not `current_cursor`.
-                            app.current_cursor = None;
-                        });
+                        with_win32_app(|app| app.is_dragging_internal.replace(false));
                     }
                 }
                 _ => {
@@ -982,10 +950,7 @@ impl Win32App {
                         }
                     }
                 }
-            });
-            // Only a drag that ends over a makepad window reaches our drop target, so the
-            // end of every drag, including one dropped elsewhere or cancelled, is reported here.
-            Win32App::do_callback(Win32Event::InternalDragEnd { ran });
+            })
         }
     }
 
@@ -1014,63 +979,49 @@ impl Win32App {
         self.time.time_now()
     }
 
-    /// Loads the system cursor shown for `cursor`, or returns `None` for a hidden cursor.
-    fn load_cursor(cursor: MouseCursor) -> Option<HCURSOR> {
-        let id = match cursor {
-            MouseCursor::Hidden => return None,
-            MouseCursor::Default => IDC_ARROW,
-            MouseCursor::Crosshair => IDC_CROSS,
-            MouseCursor::Hand => IDC_HAND,
-            // Default to Hand for non-supported cursors, until we include our own custom cursor files.
-            MouseCursor::Grab | MouseCursor::Grabbing => IDC_HAND,
-            MouseCursor::Arrow => IDC_ARROW,
-            MouseCursor::Move => IDC_SIZEALL,
-            MouseCursor::Text => IDC_IBEAM,
-            MouseCursor::Wait => IDC_ARROW,
-            MouseCursor::Help => IDC_HELP,
-            MouseCursor::NotAllowed => IDC_NO,
-
-            MouseCursor::EResize => IDC_SIZEWE,
-            MouseCursor::NResize => IDC_SIZENS,
-            MouseCursor::NeResize => IDC_SIZENESW,
-            MouseCursor::NwResize => IDC_SIZENWSE,
-            MouseCursor::SResize => IDC_SIZENS,
-            MouseCursor::SeResize => IDC_SIZENWSE,
-            MouseCursor::SwResize => IDC_SIZENESW,
-            MouseCursor::WResize => IDC_SIZEWE,
-
-            MouseCursor::NsResize => IDC_SIZENS,
-            MouseCursor::NeswResize => IDC_SIZENESW,
-            MouseCursor::EwResize => IDC_SIZEWE,
-            MouseCursor::NwseResize => IDC_SIZENWSE,
-
-            MouseCursor::ColResize => IDC_SIZEWE,
-            MouseCursor::RowResize => IDC_SIZENS,
-        };
-        unsafe { LoadCursorW(None, id).or_else(|_| LoadCursorW(None, IDC_ARROW)).ok() }
-    }
-
-    /// Records `cursor` as the one WM_SETCURSOR shows, without showing it yet.
-    pub fn request_cursor(&mut self, cursor: MouseCursor) {
-        if self.requested_cursor != cursor {
-            self.requested_cursor = cursor;
-            self.requested_hcursor = Self::load_cursor(cursor);
-        }
-    }
-
     pub fn set_mouse_cursor(&mut self, cursor: MouseCursor) {
-        self.request_cursor(cursor);
-        // OLE draws its own drag cursors while DoDragDrop runs.
-        if self.current_cursor != Some(cursor) && !self.is_dragging_internal.get() {
-            self.apply_requested_cursor();
-        }
-    }
+        if self.current_cursor.is_none() || self.current_cursor.unwrap() != cursor {
+            let win32_cursor = match cursor {
+                MouseCursor::Hidden => PCWSTR::null(),
+                MouseCursor::Default => IDC_ARROW,
+                MouseCursor::Crosshair => IDC_CROSS,
+                MouseCursor::Hand => IDC_HAND,
+                // Default to Hand for non-supported cursors, until we include our own custom cursor files.
+                MouseCursor::Grab | MouseCursor::Grabbing => IDC_HAND,
+                MouseCursor::Arrow => IDC_ARROW,
+                MouseCursor::Move => IDC_SIZEALL,
+                MouseCursor::Text => IDC_IBEAM,
+                MouseCursor::Wait => IDC_ARROW,
+                MouseCursor::Help => IDC_HELP,
+                MouseCursor::NotAllowed => IDC_NO,
 
-    /// Shows the requested cursor; WM_SETCURSOR calls this on uncaptured client-area moves.
-    pub fn apply_requested_cursor(&mut self) {
-        self.current_cursor = Some(self.requested_cursor);
-        unsafe {
-            SetCursor(self.requested_hcursor);
+                MouseCursor::EResize => IDC_SIZEWE,
+                MouseCursor::NResize => IDC_SIZENS,
+                MouseCursor::NeResize => IDC_SIZENESW,
+                MouseCursor::NwResize => IDC_SIZENWSE,
+                MouseCursor::SResize => IDC_SIZENS,
+                MouseCursor::SeResize => IDC_SIZENWSE,
+                MouseCursor::SwResize => IDC_SIZENESW,
+                MouseCursor::WResize => IDC_SIZEWE,
+
+                MouseCursor::NsResize => IDC_SIZENS,
+                MouseCursor::NeswResize => IDC_SIZENESW,
+                MouseCursor::EwResize => IDC_SIZEWE,
+                MouseCursor::NwseResize => IDC_SIZENWSE,
+
+                MouseCursor::ColResize => IDC_SIZEWE,
+                MouseCursor::RowResize => IDC_SIZENS,
+            };
+            self.current_cursor = Some(cursor);
+            unsafe {
+                if win32_cursor == PCWSTR::null() {
+                    ShowCursor(false);
+                } else {
+                    SetCursor(Some(LoadCursorW(None, win32_cursor).unwrap()));
+                    ShowCursor(true);
+                }
+            }
+            //TODO
         }
     }
 }

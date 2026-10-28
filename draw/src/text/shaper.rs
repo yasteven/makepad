@@ -455,7 +455,9 @@ impl Shaper {
                     )
                 }));
         }
-        let glyph_buffer = font.shape(&self.cached_rb_features, unicode_buffer);
+        let rb_features = &self.cached_rb_features;
+        let glyph_buffer =
+            font.with_rustybuzz_face(|face| rustybuzz::shape(face, rb_features, unicode_buffer));
         let units_per_em = font.units_per_em();
         out_glyphs.extend(
             glyph_buffer

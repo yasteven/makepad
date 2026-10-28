@@ -557,11 +557,8 @@ pub struct ShellDraw {
     pub text: DrawText,
     #[live]
     pub text_bold: DrawText,
-    /// Boxed: the ~110 KB of icon shaders would otherwise sit in every
-    /// ShellDraw by value, and the desk builds several nested ones in
-    /// stack frames at startup (overflowing Windows' 1 MB main stack).
     #[live]
-    pub icons: Box<ShellIcons>,
+    pub icons: ShellIcons,
 }
 
 /// Makepad sizes text in POINTS; the QML scale is in pixels.

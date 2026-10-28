@@ -34,7 +34,6 @@ use {
             drag_drop::{DragEvent, DragItem, DragResponse, DropEvent},
             keyboard::{CharOffset, FullTextState, ImeAction, ImeActionEvent},
             video_playback::CameraPreviewMode,
-            BackGestureEvent,
             Event,
             KeyCode,
             KeyEvent,
@@ -90,7 +89,7 @@ use {
     std::rc::Rc,
     std::sync::mpsc,
     //std::os::raw::{c_void},
-    std::time::Instant,
+    crate::sols_browser_time::Instant,
 };
 
 const ANDROID_XR_BUFFER_SCALE_MIN: f32 = 0.75;
@@ -106,25 +105,6 @@ fn android_debug_log(prio: i32, msg: &str) {
     }
     let msg = format!("{msg}\0");
     unsafe { __android_log_write(prio as c_int, "Makepad\0".as_ptr(), msg.as_ptr()) };
-}
-
-/// An Android system property's value, empty when unset. Bionic's
-/// `__system_property_get` is in libc on every API level this runs on.
-fn android_system_property(name: &str) -> String {
-    use std::ffi::{c_char, c_int, CString};
-    extern "C" {
-        fn __system_property_get(name: *const c_char, value: *mut c_char) -> c_int;
-    }
-    const PROP_VALUE_MAX: usize = 92;
-    let Ok(name) = CString::new(name) else {
-        return String::new();
-    };
-    let mut value = [0u8; PROP_VALUE_MAX];
-    let len = unsafe { __system_property_get(name.as_ptr(), value.as_mut_ptr() as *mut c_char) };
-    if len <= 0 {
-        return String::new();
-    }
-    String::from_utf8_lossy(&value[..(len as usize).min(PROP_VALUE_MAX)]).into_owned()
 }
 
 fn android_panic_summary(info: &std::panic::PanicHookInfo<'_>) -> String {
@@ -339,7 +319,6 @@ impl Cx {
             // This ensures we're in sync with the Android Choreographer when we receive a RenderLoop message.
             match from_java_rx.recv() {
                 Ok(FromJavaMessage::RenderLoop) => {
-                    let render_loop_started = std::time::Instant::now();
                     // Drain all pending messages, coalescing consecutive touch-move
                     // events to avoid redundant event dispatch before painting.
                     // Start/Stop events are never dropped — only pure-Move events
@@ -402,22 +381,6 @@ impl Cx {
                             self.os.needs_first_draw = false;
                             self.redraw_all();
                         }
-                        // The event side of a frame: the drained Java messages
-                        // (touches coalesced), the timers/signals and the live
-                        // edit gate, before any drawing. Only for a vsync that
-                        // draws (the same test `handle_drawing` makes): at rest
-                        // the loop wakes 120 times a second and paints nothing.
-                        if self.any_passes_dirty()
-                            || self.need_redrawing()
-                            || !self.new_next_frames.is_empty()
-                            || self.demo_time_repaint
-                        {
-                            crate::trace!(
-                                "frame.cpu",
-                                "events_ms={:.3}",
-                                render_loop_started.elapsed().as_secs_f64() * 1000.0
-                            );
-                        }
                         self.handle_drawing();
                     } else {
                         // Surface not ready — remember that we need a full
@@ -426,15 +389,6 @@ impl Cx {
                         // a future iteration when the surface is briefly valid
                         // but immediately torn down again (rotation race).
                         self.os.needs_first_draw = true;
-                    }
-                    // A hide still pending after this draw really hides the keyboard,
-                    // unless the draw queued a `ShowTextIME` for an input that took focus.
-                    if self.os.pending_ime_hide
-                        && !self.platform_ops.iter().any(|op| matches!(op, CxOsOp::ShowTextIME(..)))
-                    {
-                        self.os.pending_ime_hide = false;
-                        unsafe { android_jni::to_java_show_keyboard(false); }
-                        self.os.last_ime_config = None;
                     }
                 }
                 Ok(message) => {
@@ -502,70 +456,6 @@ impl Cx {
         self.redraw_all();
     }
 
-    fn update_main_window_geom(&mut self) {
-        let window_id = CxWindowPool::id_zero();
-        let window = &mut self.windows[window_id];
-        // Stash the OS-reported scale factor so a later
-        // `set_window_dpi_override(None)` can recover the native scale,
-        // and so `remap_dpi_override` (used by `dpi_override_scale`
-        // on platforms whose touch coords aren't already in
-        // override-points) has a baseline. Android itself converts
-        // touch coords at the source, so the helper is a no-op here.
-        window.os_dpi_factor = Some(self.os.dpi_factor);
-        let old_geom = window.window_geom.clone();
-
-        let dpi_factor = window.effective_dpi_factor();
-        let size = window.physical_vec2d_to_layout(self.os.display_size);
-        window.window_geom = WindowGeom {
-            dpi_factor,
-            can_fullscreen: false,
-            xr_is_presenting: false,
-            is_fullscreen: true,
-            is_topmost: true,
-            position: dvec2(0.0, 0.0),
-            inner_size: size,
-            outer_size: size,
-            safe_area_insets: window
-                .native_safe_area_insets_to_layout(self.os.native_safe_area_insets),
-            ..Default::default()
-        };
-        let new_geom = window.window_geom.clone();
-        self.call_event_handler(&Event::WindowGeomChange(WindowGeomChangeEvent {
-            window_id,
-            new_geom,
-            old_geom,
-        }));
-        if let Some(main_pass_id) = self.windows[window_id].main_pass_id {
-            self.redraw_pass_and_child_passes(main_pass_id);
-        }
-        self.redraw_all();
-        self.os.first_after_resize = true;
-        self.call_event_handler(&Event::ClearAtlasses);
-    }
-
-    fn handle_keyboard_closed(&mut self, time: f64) {
-        // Java says the keyboard is down; forget the last shown
-        // config so the next `ShowTextIME` re-issues the request.
-        self.os.last_ime_config = None;
-        if !self.os.last_ime_visible {
-            return;
-        }
-        self.os.last_ime_visible = false;
-        self.os.last_ime_height = 0.0;
-        // With a physical keyboard attached, Android auto-hides the
-        // soft keyboard while the focused TextInput stays active.
-        // Marking the IME dismissed (and re-issuing HideTextIME) would
-        // stop the IME from composing hardware-key input and freeze the
-        // IME position. Mirror the iOS guard (see ios.rs handling of
-        // VirtualKeyboardEvent::DidHide).
-        if !self.keyboard.has_physical_keyboard() {
-            self.text_ime_was_dismissed();
-        }
-        self.call_event_handler(&Event::VirtualKeyboard(
-            VirtualKeyboardEvent::DidHide { time },
-        ))
-    }
-
     fn hide_android_surface_cover_after_first_present_if_needed(&mut self) {
         if !self.os.hide_surface_cover_after_first_present || self.os.in_xr_mode {
             return;
@@ -612,9 +502,6 @@ impl Cx {
         match msg {
             FromJavaMessage::SwitchedActivity(activity_handle, activity_thread_id) => {
                 self.os.activity_thread_id = Some(activity_thread_id);
-                // The new activity's keyboard starts out closed, so treat it like the user closing it.
-                let time = self.os.timers.time_now();
-                self.handle_keyboard_closed(time);
                 if self.os.in_xr_mode {
                     if let Err(e) = self.os.openxr.create_instance(activity_handle) {
                         crate::error!("OpenXR init failed: {}", e);
@@ -628,23 +515,6 @@ impl Cx {
                 self.call_event_handler(&Event::BackPressed {
                     handled: Cell::new(false),
                 });
-            }
-            FromJavaMessage::BackGesture {
-                state,
-                abs,
-                progress,
-                edge,
-                time,
-            } => {
-                let window = &self.windows[CxWindowPool::id_zero()];
-                let e = Event::BackGesture(BackGestureEvent {
-                    state,
-                    abs: abs.map(|abs| window.physical_vec2d_to_layout(abs)),
-                    progress,
-                    edge,
-                    time,
-                });
-                self.call_event_handler(&e);
             }
             FromJavaMessage::SurfaceCreated { window } => {
                 #[cfg(use_vulkan)]
@@ -818,10 +688,8 @@ impl Cx {
                             match CxVulkan::new(window, width_u32, height_u32) {
                                 Ok(vulkan) => {
                                     self.os.vulkan = Some(vulkan);
-                                    self.os.gl_fallback = false;
                                 }
                                 Err(err) => {
-                                    self.os.gl_fallback = true;
                                     crate::error!(
                                         "Android Vulkan backend init failed, falling back to OpenGL: {err}"
                                     );
@@ -839,7 +707,44 @@ impl Cx {
                 }
 
                 self.os.display_size = dvec2(width as f64, height as f64);
-                self.update_main_window_geom();
+                let window_id = CxWindowPool::id_zero();
+                let window = &mut self.windows[window_id];
+                // Stash the OS-reported scale factor so a later
+                // `set_window_dpi_override(None)` can recover the native scale,
+                // and so `remap_dpi_override` (used by `dpi_override_scale`
+                // on platforms whose touch coords aren't already in
+                // override-points) has a baseline. Android itself converts
+                // touch coords at the source, so the helper is a no-op here.
+                window.os_dpi_factor = Some(self.os.dpi_factor);
+                let old_geom = window.window_geom.clone();
+
+                let dpi_factor = window.effective_dpi_factor();
+                let size = window.physical_vec2d_to_layout(self.os.display_size);
+                window.window_geom = WindowGeom {
+                    dpi_factor,
+                    can_fullscreen: false,
+                    xr_is_presenting: false,
+                    is_fullscreen: true,
+                    is_topmost: true,
+                    position: dvec2(0.0, 0.0),
+                    inner_size: size,
+                    outer_size: size,
+                    safe_area_insets: window
+                        .native_safe_area_insets_to_layout(self.os.native_safe_area_insets),
+                    ..Default::default()
+                };
+                let new_geom = window.window_geom.clone();
+                self.call_event_handler(&Event::WindowGeomChange(WindowGeomChangeEvent {
+                    window_id,
+                    new_geom,
+                    old_geom,
+                }));
+                if let Some(main_pass_id) = self.windows[window_id].main_pass_id {
+                    self.redraw_pass_and_child_passes(main_pass_id);
+                }
+                self.redraw_all();
+                self.os.first_after_resize = true;
+                self.call_event_handler(&Event::ClearAtlasses);
             }
             FromJavaMessage::LongClick {
                 abs,
@@ -854,35 +759,6 @@ impl Cx {
                     time,
                 });
                 self.call_event_handler(&e);
-            }
-            FromJavaMessage::TouchCancel(mut touches) => {
-                // ACTION_CANCEL: every pointer was taken away, not lifted. Each
-                // is cancelled for every capture, dispatched as
-                // `Event::FingerCancel` (raw consumers see a cancel, never a
-                // release; an internal drag ends with no drop) and retired.
-                let Some(time) = touches.first().map(|t| t.time) else { return };
-                let window = &self.windows[CxWindowPool::id_zero()];
-                for touch in &mut touches {
-                    touch.abs = window.physical_vec2d_to_layout(touch.abs);
-                    touch.radius = window.physical_vec2d_to_layout(touch.radius);
-                }
-                for touch in &touches {
-                    let digit_id: crate::event::DigitId = crate::makepad_live_id::live_id_num!(touch, touch.uid).into();
-                    self.fingers.cancel_digit(digit_id);
-                    self.call_event_handler(&Event::FingerCancel(crate::event::FingerCancelEvent {
-                        window_id: CxWindowPool::id_zero(),
-                        digit_id,
-                        device: crate::event::DigitDevice::Touch { uid: touch.uid },
-                        abs: touch.abs,
-                        time,
-                        modifiers: Default::default(),
-                    }));
-                }
-                if self.os.internal_drag_items.take().is_some() {
-                    self.call_event_handler(&Event::DragEnd);
-                    self.drag_drop.cycle_drag();
-                }
-                self.fingers.process_touch_update_end(&touches);
             }
             FromJavaMessage::Touch(mut touches) => {
                 let time = touches[0].time;
@@ -1075,7 +951,26 @@ impl Cx {
                         },
                     ))
                 } else if !is_open {
-                    self.handle_keyboard_closed(time);
+                    // Java says the keyboard is down; forget the last shown
+                    // config so the next `ShowTextIME` re-issues the request.
+                    self.os.last_ime_config = None;
+                    if !self.os.last_ime_visible {
+                        return;
+                    }
+                    self.os.last_ime_visible = false;
+                    self.os.last_ime_height = 0.0;
+                    // With a physical keyboard attached, Android auto-hides the
+                    // soft keyboard while the focused TextInput stays active.
+                    // Marking the IME dismissed (and re-issuing HideTextIME) would
+                    // stop the IME from composing hardware-key input and freeze the
+                    // IME position. Mirror the iOS guard (see ios.rs handling of
+                    // VirtualKeyboardEvent::DidHide).
+                    if !self.keyboard.has_physical_keyboard() {
+                        self.text_ime_was_dismissed();
+                    }
+                    self.call_event_handler(&Event::VirtualKeyboard(
+                        VirtualKeyboardEvent::DidHide { time },
+                    ))
                 }
             }
             FromJavaMessage::PhysicalKeyboard { connected } => {
@@ -1536,14 +1431,7 @@ impl Cx {
                     }
                 }
             }
-            // Config changes and recreated activities send the params again, with the current density.
-            FromJavaMessage::Init(params) => {
-                if params.density > 0.0 && params.density != self.os.dpi_factor {
-                    self.os.dpi_factor = params.density;
-                    self.os_type = OsType::Android(params);
-                    self.update_main_window_geom();
-                }
-            }
+            FromJavaMessage::Init(_) => {}
         }
     }
 
@@ -1554,16 +1442,13 @@ impl Cx {
             || self.demo_time_repaint
         {
             let time_now = self.os.timers.time_now();
-            let phase_started = std::time::Instant::now();
             if !self.new_next_frames.is_empty() {
                 self.call_next_frame_event(time_now);
             }
-            let next_frame_done = std::time::Instant::now();
             if self.need_redrawing() {
                 self.call_draw_event(time_now);
                 self.compile_shaders_for_active_backend();
             }
-            let draw_done = std::time::Instant::now();
 
             if self.os.first_after_resize {
                 self.os.first_after_resize = false;
@@ -1571,17 +1456,6 @@ impl Cx {
             }
 
             self.handle_repaint();
-            // Where a frame's CPU goes on the main thread, per phase: the
-            // NextFrame step, the widget draw (`call_draw_event`) and the
-            // repaint of every dirty pass (`handle_repaint`, record + submit).
-            // `adb shell setprop debug.makepad.trace frame.cpu`.
-            crate::trace!(
-                "frame.cpu",
-                "next_frame_ms={:.3} draw_ms={:.3} repaint_ms={:.3}",
-                next_frame_done.duration_since(phase_started).as_secs_f64() * 1000.0,
-                draw_done.duration_since(next_frame_done).as_secs_f64() * 1000.0,
-                draw_done.elapsed().as_secs_f64() * 1000.0,
-            );
 
             // Run script-VM garbage collection at a safe point after paint, matching
             // the macOS backend, so the script object heap doesn't grow without bound:
@@ -1592,9 +1466,6 @@ impl Cx {
                     vm.gc();
                 }
             });
-        } else {
-            #[cfg(not(use_vulkan))]
-            self.maintain_instance_retirements();
         }
     }
 
@@ -1777,9 +1648,6 @@ impl Cx {
 
         // Live edits
         self.run_live_edit_if_needed("android");
-
-        // `setprop debug.makepad.grab <n>`: the app's own frame grab.
-        self.android_poll_debug_grab();
 
         // Platform operations
         self.handle_platform_ops();
@@ -2101,14 +1969,6 @@ impl Cx {
             let mut cx = startup();
             let mut libegl = LibEgl::try_load().expect("Cant load LibEGL");
 
-            // A phone has no `MAKEPAD_TRACE` environment: the trace topics
-            // come from a system property instead
-            // (`adb shell setprop debug.makepad.trace gpu.present`).
-            let trace_topics = android_system_property("debug.makepad.trace");
-            if !trace_topics.is_empty() {
-                crate::makepad_error_log::set_trace_topics(&trace_topics);
-            }
-
             cx.os.activity_thread_id = Some(activity_thread_id);
             cx.os.render_thread_id =
                 Some(unsafe { libc_sys::syscall(libc_sys::SYS_GETTID) as u64 });
@@ -2273,7 +2133,6 @@ impl Cx {
                         cx.os.vulkan = Some(vulkan);
                     }
                     Err(err) => {
-                        cx.os.gl_fallback = true;
                         crate::error!(
                             "Android Vulkan backend init failed on startup, continuing with OpenGL: {err}"
                         );
@@ -2476,12 +2335,10 @@ impl Cx {
         //opengl_cx.make_current();
         let mut passes_todo = Vec::new();
         self.compute_pass_repaint_order(&mut passes_todo);
-        self.queue_popup_parents(&mut passes_todo);
         self.repaint_id += 1;
         for draw_pass_id in &passes_todo {
             let uniforms_gen = self.next_uniform_gen();
-            let time = self.pass_time(self.os.timers.time_now());
-            self.passes[*draw_pass_id].set_time(time, uniforms_gen);
+            self.passes[*draw_pass_id].set_time(self.os.timers.time_now() as f32, uniforms_gen);
             match self.passes[*draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {
                     // cant happen
@@ -2496,25 +2353,18 @@ impl Cx {
                     let metrics = self.collect_gpu_pass_metrics(*draw_pass_id);
                     self.draw_pass_to_window_for_active_backend(*draw_pass_id);
 
-                    // Draw popup window passes as overlays on the same surface: every open one,
-                    // dirty or not, since the parent just painted over it.
-                    let popup_pass_ids: Vec<DrawPassId> = self
-                        .windows
-                        .id_iter()
-                        .filter_map(|pw_id| {
+                    // Draw popup window passes as overlays on the same surface
+                    for popup_pass_id in &passes_todo {
+                        if let CxDrawPassParent::Window(pw_id) = self.passes[*popup_pass_id].parent
+                        {
                             let pw = &self.windows[pw_id];
-                            if !pw.is_created || !pw.is_popup || pw.popup_parent != Some(window_id) {
-                                return None;
+                            if pw.is_popup && pw.popup_parent == Some(window_id) {
+                                let saved = self.passes[*popup_pass_id].dont_clear;
+                                self.passes[*popup_pass_id].dont_clear = true;
+                                self.draw_pass_to_fullscreen(*popup_pass_id);
+                                self.passes[*popup_pass_id].dont_clear = saved;
                             }
-                            pw.main_pass_id
-                                .filter(|pass_id| self.passes[*pass_id].main_draw_list_id.is_some())
-                        })
-                        .collect();
-                    for popup_pass_id in popup_pass_ids {
-                        let saved = self.passes[popup_pass_id].dont_clear;
-                        self.passes[popup_pass_id].dont_clear = true;
-                        self.draw_pass_to_fullscreen(popup_pass_id);
-                        self.passes[popup_pass_id].dont_clear = saved;
+                        }
                     }
 
                     let end = self.seconds_since_app_start();
@@ -2539,20 +2389,6 @@ impl Cx {
                     self.draw_pass_to_texture_for_active_backend(*draw_pass_id);
                 }
             }
-        }
-        // A repaint that ended without a window pass (captures only, or the
-        // window pass skipped its turn) still has to reach the GPU.
-        #[cfg(use_vulkan)]
-        if let Some(mut vulkan) = self.os.vulkan.take() {
-            if let Err(err) = vulkan.end_repaint() {
-                crate::error!("Android Vulkan repaint submit failed: {err}");
-            }
-            self.os.vulkan = Some(vulkan);
-        }
-        // If no render ran the retirement step under this beat's repaint_id, run it here.
-        #[cfg(not(use_vulkan))]
-        if self.draw_lists.1.retirement_frame != Some(self.repaint_id) {
-            self.maintain_instance_retirements();
         }
 
         let timestamp_ns = (self.os.timers.time_now().max(0.0) * 1_000_000_000.0) as u64;
@@ -2660,9 +2496,6 @@ impl Cx {
                     self.os.timers.timers.remove(&timer_id);
                 }
                 CxOsOp::ShowTextIME(_area, _pos, config) => unsafe {
-                    // An input asking for the keyboard right after a hide (e.g., it just took
-                    // focus from another input) keeps the keyboard up.
-                    self.os.pending_ime_hide = false;
                     // A focused `TextInput` re-issues `ShowTextIME` on every
                     // draw. Calling into Java each time thrashes the IME:
                     // `configure_keyboard` can restart the input connection,
@@ -2672,19 +2505,19 @@ impl Cx {
                     // — a loop that flickers the soft keyboard open then shut.
                     // Only touch Java when the requested config actually
                     // changes; `last_ime_config` is cleared whenever the
-                    // keyboard goes down (once a pending hide goes through,
-                    // or via `ResizeTextIME`).
+                    // keyboard goes down (here or via `ResizeTextIME`).
                     if self.os.last_ime_config != Some(config) {
                         android_jni::to_java_configure_keyboard(&config);
                         android_jni::to_java_show_keyboard(true);
                         self.os.last_ime_config = Some(config);
                     }
                 },
-                CxOsOp::HideTextIME => {
+                CxOsOp::HideTextIME => unsafe {
                     // Unconditional on purpose: unlike `ShowTextIME` this is not
                     // issued per-frame, so there is no thrash to dedup — and a
                     // skipped hide would leave the soft keyboard stuck open.
-                    self.os.pending_ime_hide = true;
+                    android_jni::to_java_show_keyboard(false);
+                    self.os.last_ime_config = None;
                 },
                 CxOsOp::SyncImeState {
                     text,
@@ -3303,17 +3136,8 @@ impl CxOsApi for Cx {
             .as_secs_f64()
     }
 
-    fn open_url(&mut self, url: &str, _in_place: OpenUrlInPlace) {
-        // A Splash isolate held to the host service bridge opens nothing itself.
-        if self.script_data.std.host_io_only() { return; }
-        // A hosted child has no JVM to start an Intent with: its WM does.
-        if super::android_hosted::is_hosted() {
-            Cx::send_studio_message(crate::studio::AppToStudio::Relay(
-                crate::studio::ChildRelay::OpenUrl { url: url.to_string() },
-            ));
-            return;
-        }
-        unsafe { android_jni::to_java_open_url(url) };
+    fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
+        crate::error!("open_url not implemented on this platform");
     }
 
     fn in_xr_mode(&self) -> bool {
@@ -3553,14 +3377,11 @@ impl Default for CxOs {
             last_ime_height: 0.0,
             last_ime_visible: false,
             last_ime_config: None,
-            pending_ime_hide: false,
             media: CxAndroidMedia::default(),
             display: None,
             surface_alive: false,
             #[cfg(use_vulkan)]
             vulkan: None,
-            #[cfg(use_vulkan)]
-            gl_fallback: false,
             quit: false,
             fullscreen: false,
             timers: Default::default(),
@@ -3696,12 +3517,9 @@ pub struct CxOs {
     /// or `None` while the keyboard is requested-hidden. A focused `TextInput`
     /// re-issues `ShowTextIME` every draw; this dedups those so the JNI IME
     /// calls (and the inset-driven redraw loop they trigger) fire only on a
-    /// real change. Reset to `None` once a `HideTextIME` goes through and when
-    /// Java reports the keyboard closed.
+    /// real change. Reset to `None` on `HideTextIME` and when Java reports the
+    /// keyboard closed.
     pub last_ime_config: Option<TextInputConfig>,
-    /// Set by `HideTextIME`, which waits until after the next draw, so that moving focus
-    /// from one text input to another keeps the keyboard up instead of hiding it.
-    pub pending_ime_hide: bool,
     pub frame_time: i64,
     pub quit: bool,
     pub fullscreen: bool,
@@ -3721,10 +3539,6 @@ pub struct CxOs {
     pub(crate) surface_alive: bool,
     #[cfg(use_vulkan)]
     pub(crate) vulkan: Option<CxVulkan>,
-    /// Vulkan found no usable device and OpenGL ES draws instead; what
-    /// `Cx::gpu_backend` reports in a Vulkan build.
-    #[cfg(use_vulkan)]
-    pub(crate) gl_fallback: bool,
     pub(crate) media: CxAndroidMedia,
     pub(crate) video_surfaces: HashMap<LiveId, jobject>,
     pub(crate) video_configs: HashMap<LiveId, AndroidVideoConfig>,

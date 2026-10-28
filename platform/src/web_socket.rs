@@ -17,15 +17,16 @@ use makepad_studio_protocol::{
     StudioToAppVec,
 };
 #[allow(unused_imports)]
-use std::{
-    sync::Arc,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError},
-        Mutex,
-    },
-    time::Duration,
-};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::TryRecvError;
+use std::sync::Mutex;
+use crate::sols_browser_time::Duration;
 
 pub type WebSocket = u64;
 
@@ -47,17 +48,6 @@ pub(crate) static CONTROL_CHANNEL: Mutex<Option<Receiver<StudioToApp>>> = Mutex:
 pub(crate) static LOCAL_PROFILE_SAMPLES: Mutex<Vec<LocalProfileSample>> = Mutex::new(Vec::new());
 const LOCAL_PROFILE_SAMPLE_BUFFER_LIMIT: usize = 16_384;
 const STUDIO_SOCKET_ID: u64 = 0;
-
-/// A response of the host (studio) socket rather than an app socket.
-pub(crate) fn is_studio_socket_response(response: &NetworkResponse) -> bool {
-    match response {
-        NetworkResponse::WsOpened { socket_id }
-        | NetworkResponse::WsClosed { socket_id }
-        | NetworkResponse::WsError { socket_id, .. }
-        | NetworkResponse::WsMessage { socket_id, .. } => socket_id.0 == STUDIO_SOCKET_ID,
-        _ => false,
-    }
-}
 
 pub(crate) fn consume_studio_socket_response(
     response: &NetworkResponse,
@@ -403,53 +393,30 @@ impl Cx {
         self.start_studio_websocket(studio_http);
     }
 
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "android",
-        all(target_os = "linux", not(target_env = "ohos")),
-    ))]
+    #[cfg(not(target_os = "android"))]
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
     #[cfg(all(not(gpusim), any(not(linux_direct), use_vulkan)))]
     #[cfg(not(all(target_os = "linux", linux_direct, use_vulkan)))]
     pub(crate) fn recv_studio_websocket_message(&mut self) -> Option<WebSocketMessage> {
         self.receive_studio_websocket_message(true)
     }
 
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "android",
-        all(target_os = "linux", not(target_env = "ohos")),
-    ))]
+    #[cfg(not(target_os = "android"))]
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
     #[cfg(all(not(gpusim), any(not(linux_direct), use_vulkan)))]
     pub(crate) fn try_recv_studio_websocket_message(&mut self) -> Option<WebSocketMessage> {
         self.receive_studio_websocket_message(false)
     }
 
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "android",
-        all(target_os = "linux", not(target_env = "ohos")),
-    ))]
+    #[cfg(not(target_os = "android"))]
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
     #[cfg(all(not(gpusim), any(not(linux_direct), use_vulkan)))]
     fn receive_studio_websocket_message(&mut self, wait: bool) -> Option<WebSocketMessage> {
         loop {
-            // The loop owns the host socket from its first read on; host
-            // messages a Tick's network drain took come first (`studio_backlog`).
-            let parked = self
-                .studio_backlog
-                .get_or_insert_with(Default::default)
-                .pop_front();
-            let response = match parked {
-                Some(response) => response,
-                None => {
-                    let network = &self.net;
-                    #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(gpusim), linux_direct, use_vulkan))]
-                    let network = self.os.gpu_control_net.as_ref().unwrap_or(network);
-                    if wait { network.recv().ok()? } else { network.try_recv()? }
-                }
-            };
+            let network = &self.net;
+            #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(gpusim), linux_direct, use_vulkan))]
+            let network = self.os.gpu_control_net.as_ref().unwrap_or(network);
+            let response = if wait { network.recv().ok()? } else { network.try_recv()? };
             match response {
                 NetworkResponse::WsOpened { socket_id } if socket_id.0 == STUDIO_SOCKET_ID => {
                     STUDIO_WEB_SOCKET_CONNECTED.store(true, Ordering::SeqCst);

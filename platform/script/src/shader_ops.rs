@@ -343,11 +343,12 @@ impl ShaderFnCompiler {
                 };
 
                 let mut s = self.stack.new_string();
-                if matches!(var, ShaderScopeItem::Param { .. }) {
-                    output.backend.write_param_name(&mut s, id, shadow);
+                let var_name = if matches!(var, ShaderScopeItem::Param { .. }) {
+                    output.backend.map_param_name(id, shadow)
                 } else {
-                    output.backend.write_local_name(&mut s, id, shadow);
-                }
+                    output.backend.map_local_name(id, shadow)
+                };
+                write!(s, "{}", var_name).ok();
                 write!(s, " {} {}", op, s2).ok();
                 self.stack.push(
                     self.trap.pass(),

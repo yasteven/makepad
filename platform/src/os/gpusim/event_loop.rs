@@ -11,15 +11,16 @@ use crate::{
     window::CxWindowPool,
 };
 use makepad_studio_protocol::{AppToStudio, ScreenshotResponse, StudioToApp};
-use std::{
-    cell::RefCell,
-    io::{self, BufRead, BufReader, Write},
-    path::PathBuf,
-    rc::Rc,
-    thread,
-    time::Duration,
-    time::Instant,
-};
+use std::cell::RefCell;
+use std::io;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Write;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::thread;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
 
 /// Backing-store scale for a gpusim window. Retina by default, because a
 /// screenshot is expected to match what a real display would show. Rendering is
@@ -238,7 +239,6 @@ impl Cx {
             }
         }
         write_stdout_msg(&AppToStudio::AfterStartup);
-        write_stdout_msg(&AppToStudio::Custom(crate::ime::HostedPointerCaps::current().to_json()));
 
         'host: while running {
             let first = match json_msg_rx.recv() {
@@ -254,31 +254,6 @@ impl Cx {
             }
             Self::stdin_coalesce_host_batch(&mut batch);
             for msg in batch {
-            // A cancelled press: every capture of the mouse is cancelled, then
-            // it is released like any other.
-            // A cancelled press: every capture of the mouse is cancelled and
-            // hears `Event::FingerCancel`; the button is released with no
-            // MouseUp dispatched.
-            let msg = match msg {
-                StudioToApp::MouseCancel(e) => {
-                    let digit_id = live_id!(mouse).into();
-                    let button = crate::event::MouseButton::from_bits_retain(e.button_raw_bits);
-                    self.fingers.cancel_digit(digit_id);
-                    let window_id = self.fingers.first_mouse_button.map(|(_, w)| w).unwrap_or(CxWindowPool::id_zero());
-                    let pos = self.windows[window_id].window_geom.position;
-                    self.call_event_handler(&Event::FingerCancel(crate::event::FingerCancelEvent {
-                        window_id,
-                        digit_id,
-                        device: crate::event::DigitDevice::Mouse { button },
-                        abs: dvec2(e.x - pos.x, e.y - pos.y),
-                        time: e.time,
-                        modifiers: e.modifiers.into_key_modifiers(),
-                    }));
-                    self.fingers.mouse_up(button);
-                    continue;
-                }
-                msg => msg,
-            };
             match msg {
                 StudioToApp::KeyDown(e) => self.call_event_handler(&Event::KeyDown(e)),
                 StudioToApp::KeyUp(e) => self.call_event_handler(&Event::KeyUp(e)),
@@ -806,7 +781,7 @@ impl CxOsApi for Cx {
         self.os.start_time = Some(Instant::now());
         self.os.no_draw = crate::app_main::should_disable_gpusim_draw_from_args();
         self.os.draw_cycles = crate::app_main::gpusim_draw_cycles_from_args();
-        if let Some(item) = crate::app_meta::package_dir() {
+        if let Some(item) = std::option_env!("MAKEPAD_PACKAGE_DIR") {
             self.package_root = Some(item.to_string());
         }
         self.native_load_dependencies();
@@ -819,7 +794,6 @@ impl CxOsApi for Cx {
     }
 
     fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
-        if self.script_data.std.host_io_only() { return; }
         crate::warning!("open_url is ignored in gpusim mode");
     }
 }

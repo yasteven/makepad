@@ -38,8 +38,7 @@ app_main!(
     font_assets: [
         "makepad_widgets/resources/jetbrains_mono_variable.ttf",
         "makepad_widgets/resources/NotoColorEmoji.ttf",
-        INTER_FONT_ASSET,
-        ROBOTO_FLEX_FONT_ASSET,
+        "makepad_widgets/resources/Inter.ttf",
     ],
     configure: |cx: &mut Cx| {
         cx.set_global(wm_build());

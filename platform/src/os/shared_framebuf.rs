@@ -514,9 +514,6 @@ pub fn shared_swapchain_from_host_swapchain(
     host: &HostSwapchain,
     _cx: &mut crate::cx::Cx,
 ) -> SharedSwapchain {
-    // Android: every image is a hardware buffer the child fetches by id.
-    #[cfg(target_os = "android")]
-    _cx.android_share_host_swapchain(host);
     SharedSwapchain {
         window_id: host.window_id,
         alloc_width: host.alloc_width,
@@ -535,14 +532,14 @@ pub fn shared_swapchain_from_host_swapchain(
 pub mod aux_chan {
     use super::*;
     use crate::os::linux::ipc::{self as linux_ipc, FixedSizeEncoding};
-    use std::{
-        io,
-        os::fd::OwnedFd,
-        os::unix::net::{UnixListener, UnixStream},
-        path::PathBuf,
-        thread,
-        time::{Duration, Instant},
-    };
+    use std::io;
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixListener;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::thread;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
 
     // HACK(eddyb) `io::Error::other` stabilization is too recent.
     fn io_error_other(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {

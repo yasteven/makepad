@@ -30,18 +30,6 @@ pub const DRAW_CALL_TEXTURE_SLOTS: usize = 17;
 pub const DRAW_CALL_UNIFORM_BUFFER_SLOTS: usize = 2;
 pub const DRAW_CALL_DYN_INSTANCES: usize = 32;
 
-/// f32 lanes placed before `dyn_instances` so the array ends exactly where
-/// `DrawVars` ends. The instance data a draw call uploads is the tail of
-/// `dyn_instances` followed directly by the `#[live]` fields of the shader
-/// struct that embeds `DrawVars` (`as_slice`), so any padding after the array
-/// shifts every one of those fields by a lane. On wasm32 (4-byte pointers and
-/// usize) the 8-byte-aligned struct ended 4 bytes past the array: the shader
-/// read `char_index` where `texture_index` was, and web text drew as boxes.
-#[cfg(target_pointer_width = "32")]
-const DRAW_VARS_TAIL_PAD: usize = 1;
-#[cfg(not(target_pointer_width = "32"))]
-const DRAW_VARS_TAIL_PAD: usize = 0;
-
 #[derive(Clone, Script, Debug)]
 #[repr(C)]
 pub struct DrawVars {
@@ -65,19 +53,21 @@ pub struct DrawVars {
     pub texture_slots: [Option<Texture>; DRAW_CALL_TEXTURE_SLOTS],
     #[rust]
     pub uniform_buffer_slots: [Option<UniformBuffer>; DRAW_CALL_UNIFORM_BUFFER_SLOTS],
-    #[rust([0f32; DRAW_VARS_TAIL_PAD])]
-    pub dyn_instances_pad: [f32; DRAW_VARS_TAIL_PAD],
+    // SOLS: wasm32's 17 texture handles + 2 uniform-buffer handles occupy
+    // 76 bytes. Put the four-byte alignment gap BEFORE the instance array,
+    // never after it: as_slice() spans into the enclosing shader's fields.
+    #[rust]
+    pub sols_instance_align_pad: [u32; cfg!(target_arch = "wasm32") as usize],
     #[rust([0f32; DRAW_CALL_DYN_INSTANCES])]
     pub dyn_instances: [f32; DRAW_CALL_DYN_INSTANCES],
 }
 
-// See DRAW_VARS_TAIL_PAD: the instance fields must follow `dyn_instances`
-// with no gap, on every target.
+// SOLS: fail the build if instance reads would include struct tail padding.
 const _: () = assert!(
-    core::mem::offset_of!(DrawVars, dyn_instances)
-        + core::mem::size_of::<[f32; DRAW_CALL_DYN_INSTANCES]>()
-        == core::mem::size_of::<DrawVars>(),
-    "DrawVars must end with dyn_instances (adjust DRAW_VARS_TAIL_PAD)"
+    std::mem::offset_of!(DrawVars, dyn_instances)
+        + std::mem::size_of::<[f32; DRAW_CALL_DYN_INSTANCES]>()
+        == std::mem::size_of::<DrawVars>(),
+    "DrawVars instance array must end exactly at the struct boundary"
 );
 
 impl ScriptHook for DrawVars {

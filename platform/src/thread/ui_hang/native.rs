@@ -1,10 +1,15 @@
 use super::{phase_name, CURRENT};
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    sync::{atomic::{AtomicBool, AtomicU64, Ordering}, mpsc::{sync_channel, Receiver, SyncSender}, Arc},
-    time::{Duration, Instant},
-};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::sync_channel;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::SyncSender;
+use std::sync::Arc;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
 
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]

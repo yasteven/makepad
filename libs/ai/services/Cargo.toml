@@ -8,10 +8,8 @@
 # model, routes each call to the service that owns it, and shows the result.
 #
 # `wire` + `port` are what every app links (platform-only, no widgets, no
-# model runtime). The `engine` feature is what a host links: the agent seam
-# and the chat backends — the person's own Claude Code / Codex CLIs, Claude
-# Desktop over MCP, the Claude API. The machine's own model (the hub's local
-# runtime: Qwen on Metal/CUDA) is the separate `localai` feature.
+# model runtime). The `engine` feature is what a host links: the agent seam,
+# the hub's providers and the local model election.
 #
 # Design of record: local/agent_state/aichat/DESIGN.md
 
@@ -24,17 +22,12 @@ description = "What an app exposes to a central AI chat (manifest, tools, calls,
 
 [features]
 default = []
-# The chat backends: the CLI, MCP and cloud providers from the hub. Off by
-# default so an app that only exposes a service never links them. No model
-# runtime: the hub comes without `llm`.
+# The real models: the hub's local engine and its cloud providers. Off by
+# default so an app that only exposes a service never links a model runtime.
 engine = ["makepad-ai-hub"]
-# The machine's own model: Qwen through the hub's local runtime
-# (makepad-ai-llm, the Metal/CUDA stores and their kernel builds).
-localai = ["engine", "makepad-ai-hub/localai"]
 
 [dependencies]
 makepad-platform = { path = "../../../platform" }
 makepad-micro-serde = { path = "../../micro_serde" }
 makepad-strict-json = { path = "../../strict_json" }
-makepad-bounded-http = { path = "../../bounded_http" }
-makepad-ai-hub = { path = "../hub", default-features = false, optional = true }
+makepad-ai-hub = { path = "../hub", default-features = false, features = ["llm"], optional = true }

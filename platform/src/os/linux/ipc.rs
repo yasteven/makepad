@@ -333,7 +333,11 @@ impl<TX, RX> Channel<TX, RX> {
     /// that guarantee merely by checking a deadline between attempts.
     pub fn connect_cancellable(path: &std::path::Path, stop: &std::sync::atomic::AtomicBool,
         timeout: std::time::Duration) -> io::Result<Self> {
-        use std::{os::{fd::FromRawFd, unix::ffi::OsStrExt}, sync::atomic::Ordering, time::{Duration, Instant}};
+        use std::os::fd::FromRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::sync::atomic::Ordering;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
         #[repr(C)]
         struct Address { family: u16, path: [u8; 108] }
         use crate::os::linux::v4l2_sys::{poll, pollfd};

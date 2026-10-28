@@ -44,7 +44,6 @@ use crate::{
     all(target_os = "linux", not(any(target_env = "ohos", linux_direct))),
     target_os = "macos",
     target_os = "ios",
-    target_os = "tvos",
 ))]
 #[cfg(not(gpusim))]
 use crate::texture::{CxTexturePool, TextureAlloc, TextureCategory, TextureId, TexturePixel};
@@ -167,7 +166,7 @@ pub struct OesFrame {
 /// Zero-copy NV12 / biplanar frame from VideoToolbox (or any CVPixelBuffer
 /// producer) for Metal present. `keep_alive` must outlive GPU sampling of the
 /// adopted Metal textures (usually until the next frame replaces it).
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 pub struct MetalNv12Frame {
     pub pixel_buffer: crate::os::apple::apple_sys::CVPixelBufferRef,
     pub width: u32,
@@ -181,20 +180,20 @@ pub struct MetalNv12Frame {
 }
 
 // CVPixelBuffer / IOSurface handoff across decode → UI threads (same process).
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 unsafe impl Send for MetalNv12Frame {}
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 unsafe impl Sync for MetalNv12Frame {}
 
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 struct CvPixelBufferKeepAlive(crate::os::apple::apple_sys::CVPixelBufferRef);
 
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 unsafe impl Send for CvPixelBufferKeepAlive {}
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 unsafe impl Sync for CvPixelBufferKeepAlive {}
 
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 impl Drop for CvPixelBufferKeepAlive {
     fn drop(&mut self) {
         use crate::os::apple::apple_sys::CVPixelBufferRelease;
@@ -207,7 +206,7 @@ impl Drop for CvPixelBufferKeepAlive {
     }
 }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 impl MetalNv12Frame {
     /// Take ownership of a biplanar NV12 `CVPixelBuffer` for Metal adopt.
     ///
@@ -239,7 +238,7 @@ impl MetalNv12Frame {
 
 /// Retains `CVMetalTextureCache` + last wrap refs so Metal textures stay valid
 /// while the UI samples them.
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 pub struct MetalNv12PresentCache {
     metal_device: crate::os::apple::apple_sys::ObjcId,
     texture_cache: crate::os::apple::apple_sys::CVMetalTextureCacheRef,
@@ -247,7 +246,7 @@ pub struct MetalNv12PresentCache {
     cv_uv_texture: crate::os::apple::apple_sys::CVMetalTextureRef,
 }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 impl MetalNv12PresentCache {
     pub fn new(metal_device: crate::os::apple::apple_sys::ObjcId) -> Self {
         use crate::os::apple::apple_sys::*;
@@ -299,7 +298,7 @@ impl MetalNv12PresentCache {
     }
 }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 impl Drop for MetalNv12PresentCache {
     fn drop(&mut self) {
         self.release_textures();
@@ -1374,7 +1373,7 @@ pub use crate::os::linux::linux_video_gpu::{
     LinuxGlTextureTarget, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12, DRM_FORMAT_R8, DRM_FORMAT_RG88,
 };
 
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 mod apple_api {
     use super::*;
     use crate::os::apple::apple_sys::*;
@@ -1392,10 +1391,6 @@ mod apple_api {
             #[cfg(target_os = "ios")]
             {
                 crate::os::apple::ios::ios_app::try_metal_device()
-            }
-            #[cfg(target_os = "tvos")]
-            {
-                crate::os::apple::tvos::tvos_app::try_metal_device()
             }
         }
 
@@ -1786,7 +1781,7 @@ mod apple_api {
     }
 }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios", target_os = "tvos"), not(gpusim)))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(gpusim)))]
 pub use apple_api::{
     adopt_metal_nv12_biplanar, cv_pixel_buffer_is_biplanar_nv12, cv_pixel_buffer_is_full_range,
     detach_metal_nv12_present, media_metal_device,

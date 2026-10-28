@@ -8,8 +8,7 @@ use makepad_csg_math::Vec3d;
 use std::time::Instant;
 
 fn main() {
-    // Generated models; libs/csg/output is ignored by git.
-    let out_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../output");
+    let out_dir = "/Users/admin/makepad/makepad/libs/csg/output";
     std::fs::create_dir_all(out_dir).unwrap();
     let t = Instant::now();
 

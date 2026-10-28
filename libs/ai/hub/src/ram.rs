@@ -93,7 +93,6 @@ fn bytes_to_mb_ceil(bytes: u64) -> u64 {
     bytes / BYTES_PER_MB + u64::from(bytes % BYTES_PER_MB != 0)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn facts_from_bytes(total: u64, free: u64) -> Option<RamFacts> {
     let total_mb = total / BYTES_PER_MB;
     let free_mb = free / BYTES_PER_MB;

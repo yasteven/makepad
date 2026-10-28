@@ -16,10 +16,13 @@ use crate::{
         DEPTH_TSD_TARGET_INTEGRATION_INTERVAL_MILLIS, DEPTH_VOXEL_EYE_INDEX,
     },
 };
-use std::{
-    sync::{mpsc::{self, Receiver, Sender, TryRecvError}, OnceLock},
-    time::{Duration, Instant},
-};
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::TryRecvError;
+use std::sync::OnceLock;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
 
 const DEPTH_SURFACE_MESH_IDLE_WAIT_MILLIS: u64 = 8;
 const DEPTH_COOPERATIVE_STEP_INTERVAL_MILLIS: u64 = 8;

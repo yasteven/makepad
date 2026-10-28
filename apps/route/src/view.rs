@@ -18,9 +18,7 @@ use crate::chrome::{
     THEME_STORAGE,
 };
 use crate::history::DriveLog;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::layers;
-use crate::layers::{LayerState, WindUpdate};
+use crate::layers::{self, LayerState, WindUpdate};
 use crate::maps_root::{self, RoutePaths};
 use crate::nav::native::{self as nav_data, NavData, NavLoad, RadarData};
 use crate::nav::{ActiveNav, NavAction, NavTick};
@@ -179,7 +177,6 @@ impl RouteView {
         log!("maps root: {}", paths.maps.display());
         self.layers.set_maps_root(paths.maps.clone());
         self.drive_log.set_dir(paths.history.clone());
-        #[cfg(not(target_arch = "wasm32"))]
         let radar_cache = paths.radar_cache();
         self.paths = Some(paths);
         // Applies the theme above (chrome + map + checkboxes) and reflects
@@ -187,7 +184,6 @@ impl RouteView {
         // layers popover.
         self.apply_layers(cx);
         self.adopt_map_source(cx);
-        #[cfg(not(target_arch = "wasm32"))]
         nav_data::start_radar_worker(
             cx.thread_spawner(),
             cx.task_pool(),
@@ -948,7 +944,6 @@ impl RouteView {
         }
 
         if self.layers.wind {
-            #[cfg(not(target_arch = "wasm32"))]
             if !self.layers.wind_worker_started {
                 self.layers.wind_worker_started = true;
                 let cache = self

@@ -47,9 +47,7 @@ script_mod! {
     mod.reminders.sidebar = theme.color_bg_container
     mod.reminders.card = theme.color_fg_app
     mod.reminders.ink = theme.color_text
-    // Readable supporting ink: the theme's meta colour measured ~2.9:1 on
-    // the app ground; this mix stays above 4.5:1 in both appearances.
-    mod.reminders.ink_secondary = mix(theme.color_text, theme.color_bg_app, 0.38)
+    mod.reminders.ink_secondary = theme.color_text_meta
     mod.reminders.selected = theme.color_bg_highlight
     mod.reminders.today = theme.color_focus
     mod.reminders.scheduled = theme.color_error
@@ -106,9 +104,9 @@ script_mod! {
 
     let ReminderRow = View{
         width: Fill height: Fit
-        flow: Right align: Align{y: 0.5}
+        flow: Right
         complete := View{
-            width: 48 height: 48 flow: Overlay
+            width: 44 height: 44 flow: Overlay
             align: Align{x: 0.5 y: 0.5}
             hit := Hit{}
             empty := View{
@@ -127,19 +125,18 @@ script_mod! {
             metadata := Label{width: Fill padding: 0 height: Fit max_lines: 1 text_overflow: Ellipsis draw_text +: {color: mod.reminders.ink_secondary wrap: Words text_style: theme.font_regular{font_size: 12}}}
         }
         details := ButtonFlat{
-            width: 48 height: 48 margin: 0 padding: 0 text: ""
-            icon_walk: Walk{width: 20 height: 20}
+            width: 44 height: 44 margin: 0 padding: 0 text: ""
+            icon_walk: Walk{width: 18 height: 18}
             draw_icon +: {svg: crate_resource("self:resources/icons/info.svg") color: mod.reminders.ink_secondary}
             draw_bg +: {color: #0000 color_hover: #0000 color_down: #0000 border_size: 0.0}
         }
     }
 
-    // One 56 pt row the list reserves: the rows clip 8 pt above it.
     let Composer = View{
-        width: Fill height: 56 flow: Right spacing: 8 align: Align{y: 0.5}
-        plus := Icon{width: 24 height: 24 icon_walk: Walk{width: 20 height: 20} draw_icon +: {svg: crate_resource("self:resources/icons/plus.svg") color: mod.reminders.ink_secondary}}
-        title := TextInputFlat{width: Fill height: 48 empty_text: "New Reminder" margin: 0}
-        add := ButtonFlat{width: 64 height: 48 margin: 0 text: "Add"}
+        width: Fill height: 44 flow: Right spacing: 8
+        plus := Icon{width: 22 height: 22 icon_walk: Walk{width: 18 height: 18} draw_icon +: {svg: crate_resource("self:resources/icons/plus.svg") color: mod.reminders.ink_secondary}}
+        title := TextInputFlat{width: Fill height: 44 empty_text: "New Reminder" margin: 0}
+        add := ButtonFlat{width: 60 height: 44 margin: 0 text: "Add"}
     }
 
     let HomeContents = ScrollYView{
@@ -186,7 +183,7 @@ script_mod! {
             }
         }
         my_lists := Label{
-            width: Fill height: Fit padding: 0 margin: Inset{top: 20}
+            width: Fill height: 28 margin: Inset{top: 20}
             text: "My Lists"
             draw_text +: {color: mod.reminders.ink_secondary text_style: theme.font_regular{font_size: 13}}
         }
@@ -225,46 +222,27 @@ script_mod! {
             }
             short_title := Label{visible: false width: Fill max_lines: 1 text_overflow: Ellipsis draw_text +: {color: mod.reminders.ink text_style: theme.font_bold{font_size: 24}}}
             spacer := View{width: Fill}
-            // An explicit tonal action: the glass pill drew blank on the phone.
-            new := ButtonFlat{
-                width: 80 height: 48 margin: 0 padding: Inset{left: 12 right: 16} spacing: 6
-                text: "New"
-                icon_walk: Walk{width: 20 height: 20}
-                draw_icon +: {svg: crate_resource("self:resources/icons/plus.svg") color: theme.color_text_on_accent}
-                draw_text +: {
-                    color: theme.color_text_on_accent color_hover: theme.color_text_on_accent color_down: theme.color_text_on_accent
-                    text_style: theme.font_bold{font_size: 10.5}
-                }
-                draw_bg +: {
-                    color: theme.color_focus color_hover: theme.color_focus color_down: theme.color_focus color_focus: theme.color_focus
-                    border_size: 0.0 border_radius: 12.0
-                }
-            }
+            new := glass.GlassButton{height: 44 text: "New Reminder"}
         }
-        // Title and count share one row and one baseline.
         heading := View{
-            width: Fill height: 48 flow: Right padding: Inset{left: 32 right: 32} align: Align{y: 1.0}
-            title := Label{width: Fill padding: 0 max_lines: 1 text_overflow: Ellipsis draw_text +: {color: mod.reminders.ink text_style: theme.font_bold{font_size: 21}}}
-            count := Label{padding: 0 margin: Inset{bottom: 2} draw_text +: {color: mod.reminders.ink_secondary text_style: theme.font_regular{font_size: 12}}}
+            width: Fill height: 40 flow: Right padding: Inset{left: 32 right: 32}
+            title := Label{width: Fill draw_text +: {color: mod.reminders.ink text_style: theme.font_bold{font_size: 32}}}
+            count := Label{padding: 0 draw_text +: {color: mod.reminders.ink_secondary text_style: theme.font_regular{font_size: 15}}}
         }
         completed_summary := ButtonFlat{
-            height: 44 margin: Inset{left: 32 right: 32} padding: 0 align: Align{x: 0.0 y: 0.5} text: "0 completed · Show"
+            height: 44 margin: Inset{left: 32 right: 32} text: "0 completed · Show"
             draw_text +: {color: mod.reminders.ink_secondary}
             draw_bg +: {color: #0000 border_size: 0.0}
         }
         rows := PortalList{
             width: Fill height: Fill
             padding: Inset{left: 32 right: 32}
-            // Sections, summaries and the check glyphs share the heading's
-            // left edge: the rows start 14 pt early so the 20 pt mark sits
-            // on it inside its 48 pt target. A Label's padding lands on both
-            // its walk and its text walk, so 7 moves the text 14.
             Section := Label{
-                width: Fill height: 28 padding: Inset{left: 7}
+                width: Fill height: 28
                 draw_text +: {color: mod.reminders.ink_secondary text_style: theme.font_regular{font_size: 13}}
             }
             Item := ReminderRow{}
-            CompletedSection := ButtonFlat{width: Fill height: 44 padding: Inset{left: 14} align: Align{x: 0.0 y: 0.5} text: "" draw_text +: {color: mod.reminders.ink_secondary} draw_bg +: {color: #0000 border_size: 0.0}}
+            CompletedSection := ButtonFlat{width: Fill height: 44 text: "" draw_text +: {color: mod.reminders.ink_secondary} draw_bg +: {color: #0000 border_size: 0.0}}
             Empty := Label{
                 width: Fill height: 80
                 align: Align{x: 0.5 y: 0.5}
@@ -284,17 +262,6 @@ script_mod! {
         labels: ["Groceries", "Work", "Home", "Travel"]
     }
 
-    let PrioritySeg = View{
-        width: Fill height: Fill flow: Overlay
-        pill := RoundedView{visible: false width: Fill height: Fill draw_bg +: {color: theme.color_bg_app border_radius: 10.0}}
-        btn := ButtonFlat{
-            width: Fill height: Fill margin: 0 padding: 0 text: ""
-            align: Align{x: 0.5 y: 0.5}
-            draw_bg +: {color: #0000 color_hover: #0000 color_down: #0000 color_focus: #0000 border_size: 0.0}
-            draw_text +: {color: mod.reminders.ink_secondary text_style: theme.font_regular{font_size: 10.5}}
-        }
-    }
-
     let DetailContents = SolidView{
         width: Fill height: Fill flow: Down
         draw_bg +: {color: theme.color_bg_container}
@@ -302,17 +269,7 @@ script_mod! {
             width: Fill height: 56 flow: Right padding: Inset{left: 8 right: 8} align: Align{y: 0.5}
             cancel := ButtonFlat{height: 44 margin: 0 text: "Cancel" draw_text +: {color: theme.color_focus}}
             heading := Label{width: Fill align: Align{x: 0.5 y: 0.5} text: "Details" draw_text +: {color: mod.reminders.ink text_style: theme.font_bold{font_size: 16}}}
-            done := ButtonFlat{
-                width: 80 height: 48 margin: 0 padding: 0 text: "Done"
-                draw_text +: {
-                    color: theme.color_text_on_accent color_hover: theme.color_text_on_accent color_down: theme.color_text_on_accent
-                    text_style: theme.font_bold{font_size: 10.5}
-                }
-                draw_bg +: {
-                    color: theme.color_focus color_hover: theme.color_focus color_down: theme.color_focus color_focus: theme.color_focus
-                    border_size: 0.0 border_radius: 12.0
-                }
-            }
+            done := glass.GlassButton{height: 44 text: "Done"}
         }
         fields := ScrollYView{
             width: Fill height: Fill flow: Down
@@ -342,15 +299,9 @@ script_mod! {
                 draw_bg +: {color: mod.reminders.card border_radius: 12}
                 list := mod.reminders.ListPicker{}
                 flag := CheckBox{height: 52 text: "Flag"}
-                // Opaque selector: the glass one drew its selected label white
-                // on its white thumb and refracted the text under it.
-                priority := RoundedView{
-                    width: Fill height: 48 flow: Right padding: 4 spacing: 0
-                    draw_bg +: {color: mix(theme.color_bg_app, theme.color_text, 0.08) border_radius: 12.0}
-                    p0 := PrioritySeg{btn +: {text: "None"}}
-                    p1 := PrioritySeg{btn +: {text: "Low"}}
-                    p2 := PrioritySeg{btn +: {text: "Medium"}}
-                    p3 := PrioritySeg{btn +: {text: "High"}}
+                priority := glass.GlassSegmented{
+                    width: Fill height: 44
+                    labels: ["None", "Low", "Medium", "High"]
                 }
             }
             error := Label{visible: false draw_text +: {color: theme.color_error wrap: Words}}
@@ -449,26 +400,12 @@ script_mod! {
     }
 }
 
-/// Near-black or white, whichever reads on `fill` (WCAG relative luminance).
-fn tile_ink(fill: Vec4) -> Vec4 {
-    let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
-    let l = 0.2126 * lin(fill.x) + 0.7152 * lin(fill.y) + 0.0722 * lin(fill.z);
-    // Contrast against white (1.05 / (l + 0.05)) vs near-black (l + 0.05) / 0.06.
-    if 1.05 / (l + 0.05) >= (l + 0.05) / 0.06 {
-        vec4(1.0, 1.0, 1.0, 1.0)
-    } else {
-        vec4(0.11, 0.106, 0.125, 1.0)
-    }
-}
-
 #[derive(Script, ScriptHook, Widget)]
 pub struct RemindersView {
     #[source]
     source: ScriptObjectRef,
     #[deref]
     view: View,
-    #[rust]
-    priority_sel: usize,
     #[live]
     theme_ink: Vec4,
     #[live]
@@ -694,20 +631,6 @@ impl RemindersView {
         self.rebuild(cx);
     }
 
-    /// Returns whether it discarded the draft or went back a screen.
-    fn go_back(&mut self, cx: &mut Cx) -> bool {
-        if self.draft.is_some() {
-            self.discard_draft(cx);
-        } else if self.nav.layout.is_compact() && !matches!(self.nav.current(), Route::Home) {
-            self.nav.back();
-            self.sync_compact_nav(cx);
-            self.rebuild(cx);
-        } else {
-            return false;
-        }
-        true
-    }
-
     fn sync_compact_nav(&mut self, cx: &mut Cx) {
         if !self.nav.layout.is_compact() {
             return;
@@ -718,7 +641,11 @@ impl RemindersView {
             return;
         }
         let want = self.nav.current();
-        let visual = self.get_route_shown_by(nav.current_view());
+        let visual = match nav.current_view() {
+            Some(id) if id == live_id!(detail_view) => Route::Detail,
+            Some(_) => Route::List(self.nav.filter),
+            None => Route::Home,
+        };
         self.visual_route = visual;
         match compact_nav_step(visual, want, self.nav.filter) {
             None => self.visual_route = want,
@@ -741,14 +668,6 @@ impl RemindersView {
                 nav.pop_to_view(cx, live_id!(list_view));
                 self.visual_route = next;
             }
-        }
-    }
-
-    fn get_route_shown_by(&self, stack_view: Option<LiveId>) -> Route {
-        match stack_view {
-            Some(live_id!(detail_view)) => Route::Detail,
-            Some(_) => Route::List(self.nav.filter),
-            None => Route::Home,
         }
     }
 
@@ -836,21 +755,13 @@ impl RemindersView {
         } else {
             LayoutMode::Wide
         };
-        let inset = 16.0;
-        let top = if compact { 8.0 } else { 12.0 };
+        let inset = if compact { 20.0 } else { 16.0 };
+        let top = if compact { 16.0 } else { 12.0 };
         let mut home_view = home.clone();
         apply_owned!(cx, self.source, home_view, {padding: Inset{left: #(inset) right: #(inset) top: #(top) bottom: 88}});
         let heading = home.label(cx, ids!(heading));
         if let Some(mut label) = heading.borrow_mut() {
-            // Compact 28/36; the short landscape sidebar a 22/28 title so
-            // the smart tiles stay above the fold.
-            label.draw_text.text_style.font_size = if compact {
-                21.0
-            } else if short {
-                16.5
-            } else {
-                24.0
-            };
+            label.draw_text.text_style.font_size = if compact { 34.0 } else { 24.0 };
         }
         let gap = if compact { 12.0 } else { 10.0 };
         for (path, first) in [(ids!(first), true), (ids!(second), false)] {
@@ -876,19 +787,13 @@ impl RemindersView {
             36.0
         };
         let count_size = if compact {
-            24.0
+            28.0
         } else if short {
-            18.0
+            22.0
         } else {
             26.0
         };
-        let name_size = if compact {
-            12.0
-        } else if short {
-            10.5
-        } else {
-            13.0
-        };
+        let name_size = if compact { 15.0 } else { 13.0 };
         for path in [ids!(today), ids!(scheduled), ids!(all), ids!(flagged)] {
             let mut tile = home.widget(cx, path);
             apply_owned!(cx, self.source, tile, { height: #(tile_height) });
@@ -976,13 +881,7 @@ impl RemindersView {
             for path in [ids!(row.name), ids!(row.count)] {
                 let label = row.label(cx, path);
                 if let Some(mut label) = label.borrow_mut() {
-                    label.draw_text.text_style.font_size = if compact {
-                        12.0
-                    } else if short {
-                        11.25
-                    } else {
-                        14.0
-                    };
+                    label.draw_text.text_style.font_size = if compact { 17.0 } else { 14.0 };
                 };
             }
         }
@@ -990,47 +889,37 @@ impl RemindersView {
 
     fn list_geometry(&self, cx: &mut Cx, list: &WidgetRef, compact: bool) {
         let short = !compact && self.nav.layout.is_short();
-        // Phone and short landscape keep 16 pt content insets; the tall
-        // desktop list keeps its 32.
-        let inset = if compact || short { 16.0 } else { 32.0 };
+        let inset = if compact {
+            20.0
+        } else if short {
+            16.0
+        } else {
+            32.0
+        };
         let mut heading = list.view(cx, ids!(heading));
-        // Compact: 28/36 in a 48 pt row. Short landscape folds the title
-        // into the single 56 pt toolbar instead.
-        let font = if compact { 21.0 } else { 32.0 };
-        let count_font = if compact { 12.0 } else { 15.0 };
-        let height = if compact { 48.0 } else { 56.0 };
+        let font = if compact { 34.0 } else { 32.0 };
+        let height = if compact { 42.0 } else { 40.0 };
+        let top = if compact { 12.0 } else { 16.0 };
         apply_owned!(cx, self.source, heading, {
-            visible: #(!short) height: #(height) margin: Inset{top: 0}
+            visible: #(!short) height: #(height) margin: Inset{top: #(top)}
             padding: Inset{left: #(inset) right: #(inset)}
         });
         let title = list.label(cx, ids!(heading.title));
         if let Some(mut title) = title.borrow_mut() {
             title.draw_text.text_style.font_size = font;
         }
-        let count = list.label(cx, ids!(heading.count));
-        if let Some(mut count) = count.borrow_mut() {
-            count.draw_text.text_style.font_size = count_font;
-        }
-        let short_title = list.label(cx, ids!(toolbar.short_title));
-        short_title.set_visible(cx, short);
-        if let Some(mut label) = short_title.borrow_mut() {
-            label.draw_text.text_style.font_size = 16.5;
-        }
+        list.label(cx, ids!(toolbar.short_title))
+            .set_visible(cx, short);
         list.view(cx, ids!(toolbar.spacer)).set_visible(cx, !short);
         let mut toolbar = list.view(cx, ids!(toolbar));
-        let toolbar_left = if compact { 4.0 } else { inset };
-        apply_owned!(cx, self.source, toolbar, {padding: Inset{left: #(toolbar_left) right: #(inset)}});
+        apply_owned!(cx, self.source, toolbar, {padding: Inset{left: 8 right: #(inset)}});
         let mut summary = list.button(cx, ids!(completed_summary));
-        let summary_font = if compact || short { 10.5 } else { 11.25 };
-        apply_owned!(cx, self.source, summary, {
-            height: 40 margin: Inset{left: #(inset) right: #(inset)}
-            draw_text: {text_style: {font_size: #(summary_font)}}
-        });
+        apply_owned!(cx, self.source, summary, {margin: Inset{left: #(inset) right: #(inset)}});
         let mut rows = list.portal_list(cx, ids!(rows));
-        let rows_left = inset - 14.0;
-        apply_owned!(cx, self.source, rows, {padding: Inset{left: #(rows_left) right: #(inset)}});
+        apply_owned!(cx, self.source, rows, {padding: Inset{left: #(inset) right: #(inset)}});
         let mut composer = list.view(cx, ids!(composer));
-        apply_owned!(cx, self.source, composer, {margin: Inset{left: #(inset) right: #(inset) top: 8 bottom: 0}});
+        let bottom = if short { 8.0 } else { 12.0 };
+        apply_owned!(cx, self.source, composer, {margin: Inset{left: #(inset) right: #(inset) top: 8 bottom: #(bottom)}});
     }
 
     fn detail_geometry(&self, cx: &mut Cx, form: &WidgetRef, compact: bool) {
@@ -1077,14 +966,6 @@ impl RemindersView {
             let outline = self.theme_today;
             // Hosted roots may own a separate VM; keep this patch in that VM.
             apply_owned!(cx, self.source, tile, { draw_bg: {color: #(fill) border_size: #(border) border_color: #(outline)} });
-            // White on the light All/Flagged/Completed grounds measured
-            // under 2:1; a light ground takes near-black ink instead.
-            let ink = tile_ink(fill);
-            for path in [&ids!(body.top.count)[..], &ids!(body.name)[..], &ids!(body.top.name)[..]] {
-                home.widget(cx, id).label(cx, path).set_text_color(cx, ink);
-            }
-            let mut symbol = home.widget(cx, id).widget(cx, ids!(body.top.symbol));
-            apply_owned!(cx, self.source, symbol, {draw_icon: {color: #(ink)}});
         };
         let today = self.theme_color("today");
         let scheduled = self.theme_color("scheduled");
@@ -1244,26 +1125,6 @@ impl RemindersView {
         list.view(cx, ids!(toolbar)).set_visible(cx, true);
     }
 
-    fn show_priority(&self, cx: &mut Cx, form: &WidgetRef) {
-        for (i, seg) in [
-            ids!(fields.organization.priority.p0),
-            ids!(fields.organization.priority.p1),
-            ids!(fields.organization.priority.p2),
-            ids!(fields.organization.priority.p3),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let segment = form.widget(cx, seg);
-            let selected = i == self.priority_sel;
-            segment.widget(cx, ids!(pill)).set_visible(cx, selected);
-            let ink = if selected { self.theme_ink } else { self.theme_ink_secondary };
-            let mut btn = segment.widget(cx, ids!(btn));
-            apply_owned!(cx, self.source, btn, {draw_text: {color: #(ink) color_hover: #(ink) color_down: #(ink)}});
-        }
-        form.widget(cx, ids!(fields.organization.priority)).redraw(cx);
-    }
-
     fn bind_detail(&mut self, cx: &mut Cx, compact: bool) {
         let Some(draft) = self.draft.clone() else {
             return;
@@ -1288,8 +1149,12 @@ impl RemindersView {
                 .set_text(cx, &fields.time);
             form.check_box(cx, ids!(fields.organization.flag))
                 .set_active(cx, fields.flagged, Animate::No);
-            self.priority_sel = fields.priority.index();
-            self.show_priority(cx, &form);
+            if let Some(mut seg) = form
+                .widget(cx, ids!(fields.organization.priority))
+                .borrow_mut::<GlassSegmented>()
+            {
+                seg.set_selected(cx, fields.priority.index());
+            }
             if let Some(doc) = &self.document {
                 let drop = form.drop_down(cx, ids!(fields.organization.list));
                 drop.set_labels(cx, doc.lists.iter().map(|list| list.name.clone()).collect());
@@ -1340,7 +1205,12 @@ impl RemindersView {
         fields.flagged = form
             .check_box(cx, ids!(fields.organization.flag))
             .active(cx);
-        fields.priority = Priority::from_index(self.priority_sel);
+        if let Some(seg) = form
+            .widget(cx, ids!(fields.organization.priority))
+            .borrow::<GlassSegmented>()
+        {
+            fields.priority = Priority::from_index(seg.selected());
+        }
         let index = form
             .drop_down(cx, ids!(fields.organization.list))
             .selected_item();
@@ -1473,7 +1343,11 @@ impl RemindersView {
                 self.sync_compact_nav(cx);
                 self.rebuild(cx);
             }
-            if list.button(cx, ids!(toolbar.new)).clicked(actions) {
+            if list
+                .widget(cx, ids!(toolbar.new))
+                .borrow::<GlassButton>()
+                .is_some_and(|b| b.clicked(actions))
+            {
                 if let Some(defaults) = create_defaults(self.nav.filter, self.now) {
                     self.open_draft(cx, blank_draft(&defaults), None);
                 }
@@ -1556,21 +1430,11 @@ impl RemindersView {
                 self.discard_draft(cx);
                 return;
             }
-            for (i, seg) in [
-                ids!(fields.organization.priority.p0),
-                ids!(fields.organization.priority.p1),
-                ids!(fields.organization.priority.p2),
-                ids!(fields.organization.priority.p3),
-            ]
-            .into_iter()
-            .enumerate()
+            if form
+                .widget(cx, ids!(header.done))
+                .borrow::<GlassButton>()
+                .is_some_and(|b| b.clicked(actions))
             {
-                if form.widget(cx, seg).button(cx, ids!(btn)).clicked(actions) {
-                    self.priority_sel = i;
-                    self.show_priority(cx, &form);
-                }
-            }
-            if form.button(cx, ids!(header.done)).clicked(actions) {
                 self.commit_draft(cx);
                 return;
             }
@@ -1767,8 +1631,6 @@ impl RemindersView {
     fn apply_layout(&mut self, cx: &mut Cx, size: Vec2d) {
         let layout = decide_layout(size.x, size.y, Some(self.nav.layout));
         if layout != self.nav.layout {
-            // The other layout hides our stack, so a swipe or back gesture on it could never finish.
-            self.view.stack_navigation(cx, ids!(compact.nav)).end_interactive_pop_without_animation(cx);
             self.capture_form(cx);
             let previous = self
                 .list_parent(cx, self.nav.layout.is_compact())
@@ -1788,7 +1650,7 @@ impl RemindersView {
         }
         if layout.is_wide() {
             let mut sidebar = self.view.view(cx, ids!(wide.columns.sidebar));
-            let sidebar_width = if layout.is_short() { 224.0 } else { 280.0 };
+            let sidebar_width = if layout.is_short() { 236.0 } else { 280.0 };
             apply_owned!(cx, self.source, sidebar, { width: #(sidebar_width) });
             let mut pop = self.view.widget(cx, ids!(wide.overlay.popover));
             let width =
@@ -1821,9 +1683,8 @@ impl RemindersView {
         item: &crate::engine::ProjectedItem,
         width: f64,
     ) -> f64 {
-        // The phone in either orientation uses the 16/24 + 14/20 scale.
-        let compact = self.nav.layout.is_compact() || self.nav.layout.is_short();
-        let text_width = (width - 48.0 - 48.0 - 8.0).max(1.0);
+        let compact = self.nav.layout.is_compact();
+        let text_width = (width - 44.0 - 44.0 - 8.0).max(1.0);
         let mut content_height = 0.0;
         let mut title_lines = 1;
         for (path, text, max_lines, font, line_height) in [
@@ -1831,22 +1692,22 @@ impl RemindersView {
                 ids!(text.title),
                 Some(item.title.as_str()),
                 2,
-                if compact { 12.0 } else { 15.0 },
-                if compact { 24.0 } else { 20.0 },
+                if compact { 17.0 } else { 15.0 },
+                if compact { 22.0 } else { 20.0 },
             ),
             (
                 ids!(text.notes),
                 item.notes_preview.as_deref(),
                 1,
-                if compact { 10.5 } else { 12.0 },
-                if compact { 20.0 } else { 17.0 },
+                if compact { 13.0 } else { 12.0 },
+                if compact { 18.0 } else { 17.0 },
             ),
             (
                 ids!(text.metadata),
                 item.metadata.as_deref(),
                 if self.nav.layout.is_short() { 0 } else { 1 },
-                if compact { 10.5 } else { 12.0 },
-                if compact { 20.0 } else { 17.0 },
+                if compact { 13.0 } else { 12.0 },
+                if compact { 18.0 } else { 17.0 },
             ),
         ] {
             let label = widget.label(cx, path);
@@ -1876,7 +1737,7 @@ impl RemindersView {
                 }
             };
         }
-        let padding = if compact { 12.0 } else { 8.0 };
+        let padding = if compact { 10.0 } else { 8.0 };
         let mut text = widget.view(cx, ids!(text));
         apply_owned!(cx, self.source, text, {padding: Inset{top: #(padding) bottom: #(padding) right: 8}});
         let measured_height = ((content_height + padding * 2.0) / 4.0).ceil() * 4.0;
@@ -1898,10 +1759,6 @@ impl RemindersView {
                 ListRow::Section(text) => {
                     let item = list.item(cx, index, live_id!(Section));
                     item.set_text(cx, text);
-                    if let Some(mut label) = item.borrow_mut::<Label>() {
-                        label.draw_text.text_style.font_size =
-                            if self.nav.layout.is_compact() || self.nav.layout.is_short() { 10.5 } else { 13.0 };
-                    }
                     item.draw_all(cx, &mut Scope::empty());
                 }
                 ListRow::Empty(text) => {
@@ -1996,43 +1853,18 @@ impl Widget for RemindersView {
                 return;
             }
         }
-        // We handle our stack's actions before it does, so Back on one of its views
-        // pops to the screen we go back to, not to its root.
-        if let Event::Actions(actions) = event {
-            let nav = self.view.stack_navigation(cx, ids!(compact.nav));
-            for view_id in [live_id!(list_view), live_id!(detail_view)] {
-                let view_uid = nav.view_by_id(cx, view_id).widget_uid();
-                if actions
-                    .filter_widget_actions_cast::<StackNavigationAction>(view_uid)
-                    .any(|action| matches!(action, StackNavigationAction::Pop))
-                {
-                    self.go_back(cx);
-                }
-            }
-            for action in actions.filter_widget_actions_cast::<StackNavigationTransitionAction>(nav.widget_uid()) {
-                let is_on_popped_screen = self.nav.current() == self.get_route_shown_by(nav.current_view());
-                match action {
-                    StackNavigationTransitionAction::InteractivePopStarted if is_on_popped_screen => {
-                        // Home is the stack's root, which it shows beneath a list by itself.
-                        if self.nav.current() == Route::Detail {
-                            nav.set_interactive_pop_view(cx, Some(live_id!(list_view)));
-                        }
-                    }
-                    StackNavigationTransitionAction::InteractivePopStarted => nav.cancel_interactive_pop(cx),
-                    // The stack finishes popping by itself, and our sync waits for that.
-                    // Escape may have closed the draft mid-swipe, which already went back.
-                    StackNavigationTransitionAction::InteractivePopCommitted if is_on_popped_screen => {
-                        self.go_back(cx);
-                    }
-                    _ => {}
-                }
-            }
-        }
         if let Event::BackPressed { .. } = event {
-            // A swipe or back gesture's pop gets this Back instead, since the system's back gesture ends with one.
-            let has_pending_pop = self.view.stack_navigation(cx, ids!(compact.nav)).has_pending_interactive_pop();
-            if !has_pending_pop && event.back_pressed() && self.go_back(cx) {
-                return;
+            if event.back_pressed() {
+                if self.draft.is_some() {
+                    self.discard_draft(cx);
+                    return;
+                }
+                if self.nav.layout.is_compact() && !matches!(self.nav.current(), Route::Home) {
+                    self.nav.back();
+                    self.sync_compact_nav(cx);
+                    self.rebuild(cx);
+                    return;
+                }
             }
         }
         let overlay_up = self.draft.is_some() && self.nav.layout.is_wide();

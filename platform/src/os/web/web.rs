@@ -318,38 +318,10 @@ impl Cx {
                 }
 
                 live_id!(ToWasmTouchUpdate) => {
-                    let update = ToWasmTouchUpdate::read_to_wasm(&mut to_wasm);
-                    let cancelled: Vec<_> = update.touches.iter()
-                        .filter(|touch| touch.state == 4).map(|touch| touch.uid as u64).collect();
-                    let mut e: TouchUpdateEvent = update.into();
+                    let mut e: TouchUpdateEvent = ToWasmTouchUpdate::read_to_wasm(&mut to_wasm).into();
                     let window_id = e.window_id;
                     for touch in e.touches.iter_mut() {
                         self.dpi_override_scale(&mut touch.abs, window_id);
-                    }
-                    for touch in e.touches.iter().filter(|touch| cancelled.contains(&touch.uid)) {
-                        let digit_id = live_id_num!(touch, touch.uid).into();
-                        self.fingers.cancel_digit(digit_id);
-                        self.call_event_handler(&Event::FingerCancel(crate::event::FingerCancelEvent {
-                            window_id,
-                            digit_id,
-                            device: crate::event::DigitDevice::Touch { uid: touch.uid },
-                            abs: touch.abs,
-                            time: e.time,
-                            modifiers: e.modifiers,
-                        }));
-                    }
-                    if !cancelled.is_empty() {
-                        if self.drag_drop.cancel_internal_drag() {
-                            self.call_event_handler(&Event::DragEnd);
-                            self.drag_drop.cycle_drag();
-                        }
-                        let stopped: Vec<_> = e.touches.iter()
-                            .filter(|touch| cancelled.contains(&touch.uid)).cloned().collect();
-                        self.fingers.process_touch_update_end(&stopped);
-                        e.touches.retain(|touch| !cancelled.contains(&touch.uid));
-                    }
-                    if e.touches.is_empty() {
-                        continue;
                     }
                     self.fingers.process_touch_update_start(e.time, &e.touches);
                     let e = Event::TouchUpdate(e);
@@ -998,6 +970,10 @@ impl Cx {
             || self.new_next_frames.len() != 0
             || self.demo_time_repaint
             || self.has_pending_webgl_resource_retirements()
+            // Service the latest submission even if no pass needs painting.
+            // A failed fence retries on a later frame, never recursively from
+            // the completion callback's Signal dispatch.
+            || self.frame_submission_serial() > self.frame_completed_serial()
         {
             self.os.from_wasm(FromWasmRequestAnimationFrame {});
         }
@@ -1011,10 +987,9 @@ impl Cx {
 
         self.compute_pass_repaint_order(&mut passes_todo);
         self.repaint_id += 1;
-        let pass_time = self.pass_time(time);
         for draw_pass_id in &passes_todo {
             let uniforms_gen = self.next_uniform_gen();
-            self.passes[*draw_pass_id].set_time(pass_time, uniforms_gen);
+            self.passes[*draw_pass_id].set_time(time as f32, uniforms_gen);
             match self.passes[*draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {}
                 CxDrawPassParent::Window(window_id) => {
@@ -1037,6 +1012,13 @@ impl Cx {
                 }
             }
         }
+        // WebGL instance uploads retire against real GPU submission serials.
+        // Poll after encoding every pass, including on maintenance-only frames:
+        // otherwise ordinary repainting can fill the allocation budget with
+        // released buffers and turn into a permanent clear-only retry loop.
+        // Keep this on the animation-frame path; an immediately failed fence
+        // must not re-enter the pump and request itself recursively.
+        self.poll_texture_lifetimes();
     }
 
     // empty stub
@@ -1628,7 +1610,6 @@ impl CxOsApi for Cx {
     }
 
     fn open_url(&mut self, url: &str, in_place: OpenUrlInPlace) {
-        if self.script_data.std.host_io_only() { return; }
         self.os.from_wasm(FromWasmOpenUrl {
             url: url.to_string(),
             in_place: if let OpenUrlInPlace::Yes = in_place {

@@ -15,54 +15,6 @@ pub struct FontFace {
     /// Same lifetime considerations as `ParsedFontFace::face` — the rustybuzz
     /// face borrows from the same stable heap-allocated font data.
     cached_rb_face: RefCell<Option<rustybuzz::Face<'static>>>,
-    /// Plans compiled against `cached_rb_face`. A plan bakes in the face's variation
-    /// coordinates, so `set_variations` drops these along with the face.
-    cached_shape_plans: RefCell<Vec<CachedShapePlan>>,
-    /// Lazily-built CoreText fallback for glyph outlines ttf_parser cannot
-    /// read (`hvgl`-only Apple system fonts). Outer `None` = not attempted
-    /// yet; inner `None` = attempted and unavailable (never retried).
-    /// Invalidated when `set_variations` is called, since the CTFont carries
-    /// the variation coordinates.
-    #[cfg(target_os = "macos")]
-    cached_coretext_face: RefCell<Option<Option<super::coretext::CoreTextFace>>>,
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod coretext_gate_tests {
-    use super::*;
-
-    /// An ordinary face must never resolve a CoreText font: its space glyph
-    /// has no outline either, and the resolution is a cascade-list scan plus a
-    /// temp-file font load on the UI thread.
-    #[test]
-    fn an_ordinary_face_never_resolves_a_coretext_font() {
-        let bytes = include_bytes!("../../../widgets/resources/RobotoFlex.ttf");
-        let face = FontFace::from_data_and_index(FontData::from_vec(bytes.to_vec()), 0).unwrap();
-        assert!(!face.outlines_live_only_in_hvgl());
-        let space = face.with_ttf_parser_face(|f| f.glyph_index(' ').unwrap().0);
-        assert!(face.coretext_glyph_outline(space, 2048.0).is_none());
-        assert!(
-            matches!(*face.cached_coretext_face.borrow(), Some(None)),
-            "the gate must settle the cache without building a CoreTextFace"
-        );
-    }
-
-    /// PingFangUI.ttc on macOS 26+ is the face the fallback exists for.
-    #[test]
-    fn an_hvgl_only_system_face_passes_the_gate() {
-        const PINGFANG: &str = "/System/Library/PrivateFrameworks/FontServices.framework/Resources/Reserved/PingFangUI.ttc";
-        let Ok(data) = FontData::from_file_mmap_or_read(PINGFANG) else {
-            eprintln!("PingFangUI.ttc not present, skipping");
-            return;
-        };
-        let face = FontFace::from_data_and_index(data, 0).unwrap();
-        let has_glyf = face.with_ttf_parser_face(|f| f.tables().glyf.is_some());
-        if has_glyf {
-            eprintln!("this macOS still ships a glyf PingFang, skipping");
-            return;
-        }
-        assert!(face.outlines_live_only_in_hvgl());
-    }
 }
 
 #[cfg(test)]
@@ -71,7 +23,7 @@ mod mobile_font_tests {
 
     #[test]
     fn android_font_has_shaped_advances_and_outlines() {
-        let bytes = include_bytes!("../../../widgets/resources/RobotoFlex.ttf");
+        let bytes = include_bytes!("makepad_widgets:resources/RobotoFlex.ttf");
         for weight in [400.0, 600.0] {
             let mut face = FontFace::from_data_and_index(FontData::from_vec(bytes.to_vec()), 0).unwrap();
             face.set_variations(&[(u32::from_be_bytes(*b"wght"), weight)]);
@@ -97,14 +49,6 @@ struct ParsedFontFace {
     face: ttf_parser::Face<'static>,
 }
 
-struct CachedShapePlan {
-    direction: rustybuzz::Direction,
-    script: Option<rustybuzz::Script>,
-    language: Option<rustybuzz::Language>,
-    features: Vec<rustybuzz::Feature>,
-    plan: rustybuzz::ShapePlan,
-}
-
 impl Clone for FontFace {
     fn clone(&self) -> Self {
         Self {
@@ -112,9 +56,6 @@ impl Clone for FontFace {
             variations: self.variations.clone(),
             cached_ttf_face: RefCell::new(None),
             cached_rb_face: RefCell::new(None),
-            cached_shape_plans: RefCell::new(Vec::new()),
-            #[cfg(target_os = "macos")]
-            cached_coretext_face: RefCell::new(None),
         }
     }
 }
@@ -166,9 +107,6 @@ impl FontFace {
             variations: Vec::new(),
             cached_ttf_face: RefCell::new(None),
             cached_rb_face: RefCell::new(None),
-            cached_shape_plans: RefCell::new(Vec::new()),
-            #[cfg(target_os = "macos")]
-            cached_coretext_face: RefCell::new(None),
         })
     }
 
@@ -208,49 +146,6 @@ impl FontFace {
         f(rb_cache.as_ref().unwrap())
     }
 
-    /// Same output as `rustybuzz::shape`, but compiles each distinct plan only once.
-    pub fn shape(
-        &self,
-        features: &[rustybuzz::Feature],
-        mut buffer: rustybuzz::UnicodeBuffer,
-    ) -> rustybuzz::GlyphBuffer {
-        // This is the guess `rustybuzz::shape` makes before compiling its plan. A guess
-        // never stores `UNKNOWN`, so reading that back means the script is unset.
-        buffer.guess_segment_properties();
-        let direction = buffer.direction();
-        let script = Some(buffer.script()).filter(|&script| script != rustybuzz::script::UNKNOWN);
-        let language = buffer.language();
-        self.with_rustybuzz_face(|face| {
-            let mut plans = self.cached_shape_plans.borrow_mut();
-            let index = match plans.iter().position(|cached| {
-                cached.direction == direction
-                    && cached.script == script
-                    && cached.language == language
-                    && cached.features == features
-            }) {
-                Some(index) => index,
-                None => {
-                    let plan = rustybuzz::ShapePlan::new(
-                        face,
-                        direction,
-                        script,
-                        language.as_ref(),
-                        features,
-                    );
-                    plans.push(CachedShapePlan {
-                        direction,
-                        script,
-                        language,
-                        features: features.to_vec(),
-                        plan,
-                    });
-                    plans.len() - 1
-                }
-            };
-            rustybuzz::shape_with_plan(face, &plans[index].plan, buffer)
-        })
-    }
-
     pub fn data(&self) -> &FontData {
         &self.parsed.data
     }
@@ -265,68 +160,5 @@ impl FontFace {
         *self.cached_ttf_face.borrow_mut() = None;
         // Invalidate the cached rustybuzz face since variations affect shaping.
         *self.cached_rb_face.borrow_mut() = None;
-        self.cached_shape_plans.borrow_mut().clear();
-        // The CoreText fallback carries variation coordinates on its CTFont.
-        #[cfg(target_os = "macos")]
-        {
-            *self.cached_coretext_face.borrow_mut() = None;
-        }
-    }
-
-    /// Whether ttf_parser can never outline this face while CoreText can: no
-    /// `glyf`, `CFF` or `CFF2` table, and an `hvgl` table present. A bitmap
-    /// face (`sbix` emoji) has none of the four and stays out.
-    #[cfg(target_os = "macos")]
-    fn outlines_live_only_in_hvgl(&self) -> bool {
-        self.with_ttf_parser_face(|face| {
-            let tables = face.tables();
-            tables.glyf.is_none()
-                && tables.cff.is_none()
-                && tables.cff2.is_none()
-                && face
-                    .raw_face()
-                    .table(ttf_parser::Tag::from_bytes(b"hvgl"))
-                    .is_some()
-        })
-    }
-
-    /// Outline a glyph via the CoreText fallback. Used only when ttf_parser
-    /// finds no outline (fonts whose outlines live in Apple's proprietary
-    /// `hvgl` table, e.g. PingFang on macOS 26+). The CTFont is built lazily
-    /// from the same face bytes, so glyph IDs are consistent with the
-    /// ttf_parser/rustybuzz view of this face; a failed attempt is remembered
-    /// and never retried.
-    #[cfg(target_os = "macos")]
-    pub(super) fn coretext_glyph_outline(
-        &self,
-        glyph_id: u16,
-        units_per_em: f32,
-    ) -> Option<super::glyph_outline::GlyphOutline> {
-        {
-            let mut cache = self.cached_coretext_face.borrow_mut();
-            if cache.is_none() {
-                // Every face gets here, not just an hvgl one: a space has no
-                // outline in any font. Resolving a CTFont for an ordinary face
-                // would cost a cascade-list scan and a temp-file font load on
-                // the UI thread to outline nothing, so only a face whose
-                // outlines live solely in `hvgl` is ever resolved.
-                *cache = Some(if self.outlines_live_only_in_hvgl() {
-                    super::coretext::CoreTextFace::new(
-                        self.parsed.data.as_slice(),
-                        self.parsed.index,
-                        units_per_em,
-                        &self.variations,
-                    )
-                } else {
-                    None
-                });
-            }
-        }
-        let cache = self.cached_coretext_face.borrow();
-        cache
-            .as_ref()
-            .unwrap()
-            .as_ref()?
-            .glyph_outline(glyph_id, units_per_em)
     }
 }

@@ -234,43 +234,47 @@ impl Cx {
                     return EventFlow::Exit;
                 }
             }
-            Win32Event::Beat { window_id, time } => {
+            Win32Event::Beat {
+                window_id,
+                time,
+                primary,
+            } => {
                 // One window's frame-latency waitable fired: the compositor retired
                 // a present and is ready for that window's next frame. Aim the tick
                 // at the flip it will actually be shown on, not at "now" — that is
                 // what makes animation advance in even steps instead of by however
                 // long this particular tick happened to take.
-                let (flip_time, period) = d3d11_windows
+                let flip_time = d3d11_windows
                     .iter_mut()
                     .find(|w| w.window_id == window_id)
-                    .map(|w| (w.target_present_time(time), w.refresh_period))
-                    .unwrap_or((time, 1.0 / 60.0));
-                // The app clock steps once per display flip, on whichever window's
-                // beat reaches that flip first; a later beat aimed at the same flip
-                // (a second window on the same display) paints its own pass tree
-                // only, or every animation would run N× fast with N windows. This
-                // used to belong to one "primary" window, and any time that window
-                // had no beat coming — it held its credit because it had nothing
-                // new to show, it was occluded, or a live move/resize had moved it
-                // to the back of the registration list — no beat stepped the clock
-                // at all: every animation froze while the other window kept
-                // flipping, and moved only while a modal move loop ran unscoped
-                // ticks. The wall-clock arm keeps the clock going if a flip estimate
-                // ever lands far ahead.
-                let full = match self.os.clock_step {
-                    Some((last_flip, last_wake)) => {
-                        flip_time >= last_flip + period * 0.5
-                            || time >= last_wake + period * 1.5
-                    }
-                    None => true,
-                };
-                if full {
-                    self.os.clock_step = Some((flip_time, time));
-                }
+                    .map(|w| w.target_present_time(time))
+                    .unwrap_or(time);
+                // The primary window owns the app clock. If it can no longer beat
+                // (minimized, occluded, device lost) its tick would simply never
+                // run, and every animation would freeze while a secondary window
+                // keeps flipping — so hand the full tick to whoever is still
+                // beating.
+                let primary_window =
+                    with_win32_app(|app| app.beat_handles.first().map(|b| b.window_id));
+                let primary_alive = primary_window.is_some_and(|pid| {
+                    pid == window_id
+                        || d3d11_windows.iter().any(|w| {
+                            w.window_id == pid
+                                && !w.device_lost
+                                && w.occluded_since.is_none()
+                                && !w.win32_window.is_iconic()
+                        })
+                });
+                let primary = primary || !primary_alive;
                 with_win32_app(|app| app.frame_trace.flip_lead(time, flip_time));
                 self.os.link_scope = Some(window_id);
                 self.os.link_flip_time = Some(flip_time);
-                self.paint_tick(flip_time, full, d3d11_cx, d3d11_windows);
+                // The primary window's beat drives the WHOLE tick (video, next
+                // frames, draw, paint) — the same work as the unscoped Paint, just
+                // clocked by the flip. A secondary window's beat paints only its own
+                // pass tree: advancing the animation clock once per window per
+                // refresh would double-step every animation in a multi-window app.
+                self.paint_tick(flip_time, primary, d3d11_cx, d3d11_windows);
                 self.os.link_scope = None;
                 self.os.link_flip_time = None;
                 // If nothing was painted for this window (its pass was clean, or it
@@ -348,21 +352,16 @@ impl Cx {
                 self.drag_drop.cycle_drag();
             }
             Win32Event::DragEnd => {
-                self.release_mouse_after_drag();
-                // A drag this app started ends with `InternalDragEnd` once OLE is done with it.
-                if !with_win32_app(|app| app.is_dragging_internal.get()) {
-                    self.call_event_handler(&Event::DragEnd);
-                    self.drag_drop.cycle_drag();
-                }
-            }
-            Win32Event::InternalDragEnd { ran } => {
-                // Only a drop or exit over one of our windows releases the button that OLE
-                // consumed, so a drag that never reached one still holds it.
-                if ran && self.fingers.first_mouse_button.is_some() {
-                    self.release_mouse_after_drag();
-                }
-                self.call_event_handler(&Event::DragEnd);
-                self.drag_drop.cycle_drag();
+                // send MouseUp
+                self.call_event_handler(&Event::MouseUp(MouseUpEvent {
+                    abs: dvec2(-100000.0, -100000.0),
+                    button: MouseButton::PRIMARY,
+                    window_id: CxWindowPool::id_zero(),
+                    modifiers: Default::default(),
+                    time: 0.0,
+                }));
+                self.fingers.mouse_up(MouseButton::PRIMARY);
+                self.fingers.cycle_hover_area(live_id!(mouse).into());
             }
             Win32Event::KeyDown(e) => {
                 self.keyboard.process_key_down(e.clone());
@@ -385,12 +384,6 @@ impl Cx {
                     self.handle_termination_signal();
                     self.handle_media_signals();
                     self.handle_script_signals();
-                }
-                // A shader compile finishing on the pool raises the internal signal. Its
-                // redraw has to start here: a window at rest has no frame of its own to
-                // pick the shader up, and what it holds back stays missing until input.
-                if internal_signal {
-                    self.hlsl_adopt_shaders(d3d11_cx);
                 }
                 if ui_signal {
                     self.call_event_handler(&Event::Signal);
@@ -443,7 +436,6 @@ impl Cx {
                 if self.any_passes_dirty()
                     || self.need_redrawing()
                     || self.new_next_frames.len() != 0
-                    || self.demo_time_repaint
                     || !self.screenshot_requests.is_empty()
                     || self.os.video_players.values().any(|p| p.keep_polling())
                 {
@@ -471,8 +463,6 @@ impl Cx {
         if self.any_passes_dirty()
             || self.need_redrawing()
             || self.new_next_frames.len() != 0
-            // A time-driven shader's pass only turns dirty in the next compute_pass_repaint_order.
-            || self.demo_time_repaint
             // A pending screenshot must never be left asleep in `GetMessageW`:
             // nothing else would wake the loop to render the frame it needs.
             || !self.screenshot_requests.is_empty()
@@ -482,23 +472,6 @@ impl Cx {
         } else {
             EventFlow::Wait
         }
-    }
-
-    /// Ends the press and hover state left over from a drag over our windows: OLE
-    /// consumes the button release and every mouse move made while it runs.
-    fn release_mouse_after_drag(&mut self) {
-        // A cursor requested before the drag ended is stale; the next hover under
-        // the pointer requests its own.
-        with_win32_app(|app| app.request_cursor(crate::cursor::MouseCursor::Default));
-        self.call_event_handler(&Event::MouseUp(MouseUpEvent {
-            abs: dvec2(-100000.0, -100000.0),
-            button: MouseButton::PRIMARY,
-            window_id: CxWindowPool::id_zero(),
-            modifiers: Default::default(),
-            time: 0.0,
-        }));
-        self.fingers.mouse_up(MouseButton::PRIMARY);
-        self.fingers.cycle_hover_area(live_id!(mouse).into());
     }
 
     /// One paint tick: advance the frame, redraw what is dirty, and present.
@@ -606,7 +579,6 @@ impl Cx {
                 self.new_next_frame();
             }
         }
-        self.hlsl_adopt_shaders(&d3d11_cx);
         if self.need_redrawing() {
             self.call_draw_event(time_now);
             self.hlsl_compile_shaders(&d3d11_cx);
@@ -638,10 +610,8 @@ impl Cx {
                 && d3d11_windows.iter().all(|w| {
                     w.device_lost || w.occluded_since.is_some() || w.win32_window.is_iconic()
                 });
-            // A time repaint that only painted offscreen passes has no flip to pace it either.
-            let wake_only = self.demo_time_repaint && !self.any_passes_dirty();
-            if !self.new_next_frames.is_empty() || self.any_passes_dirty() || video_pacing || wake_only {
-                let ms = if video_pacing || nothing_can_present || wake_only { 8 } else { 1 };
+            if !self.new_next_frames.is_empty() || self.any_passes_dirty() || video_pacing {
+                let ms = if video_pacing || nothing_can_present { 8 } else { 1 };
                 std::thread::sleep(std::time::Duration::from_millis(ms));
             }
         }
@@ -803,20 +773,6 @@ impl Cx {
     ) -> bool {
         let mut presented = false;
         let mut passes_todo = Vec::new();
-        // Each pass's paint state before the repaint order is worked out, for
-        // the passes a scoped beat holds back (below).
-        let held_state: Vec<(bool, bool)> = if self.os.link_scope.is_some() {
-            let mut state = Vec::new();
-            for id in self.passes.id_iter() {
-                if state.len() <= id.0 {
-                    state.resize(id.0 + 1, (false, false));
-                }
-                state[id.0] = (self.passes[id].paint_dirty, self.passes[id].repaint_requested);
-            }
-            state
-        } else {
-            Vec::new()
-        };
         self.compute_pass_repaint_order(&mut passes_todo);
         self.repaint_id += 1;
         // ONE timestamp for the whole frame: the flip this beat is aimed at, or
@@ -826,22 +782,14 @@ impl Cx {
         let time_now = self
             .os
             .link_flip_time
-            .unwrap_or_else(|| with_win32_app(|app| app.time_now()));
-        let pass_time = self.pass_time(time_now);
+            .unwrap_or_else(|| with_win32_app(|app| app.time_now())) as f32;
         let scope = self.os.link_scope;
-        // Which windows have a beat of their own coming. Only those are held back
-        // during someone else's beat — a popup (no frame-latency waitable), a window
-        // in a live resize, or a window already holding a credit (its compositor is
-        // ready and it is out of the wait) has no beat coming, so holding its pass
-        // back would freeze it for as long as another window keeps flipping.
-        let awaiting: Vec<WindowId> = if scope.is_some() {
-            with_win32_app(|app| {
-                app.beat_handles
-                    .iter()
-                    .filter(|b| !b.credit_held)
-                    .map(|b| b.window_id)
-                    .collect()
-            })
+        // Which windows have a beat of their own. Only those are held back during
+        // someone else's beat — a popup (no frame-latency waitable) or a window in
+        // a live resize has no beat coming, so holding its pass back would freeze
+        // it for as long as another window keeps flipping.
+        let paced: Vec<WindowId> = if scope.is_some() {
+            with_win32_app(|app| app.beat_handles.iter().map(|b| b.window_id).collect())
         } else {
             Vec::new()
         };
@@ -855,26 +803,16 @@ impl Cx {
                     // retired), and holding the pass back while another window
                     // keeps flipping would leave the grab unanswered forever.
                     if window_id != scope
-                        && awaiting.contains(&window_id)
+                        && paced.contains(&window_id)
                         && !self.has_pending_window_screenshot(window_id)
                     {
-                        // Leave it exactly as it was before this tick worked out
-                        // its repaint order. That pass marks every time-animated
-                        // pass dirty and propagates dirtiness to parents; kept on a
-                        // pass that is not painted here, that dirt reads as "never
-                        // painted" to a producer that waits for its last frame to
-                        // paint before recording the next (feedback effects), which
-                        // then stalls whenever another window beats in between.
-                        // The owner's own beat works the order out again.
-                        let (dirty, requested) = held_state[draw_pass_id.0];
-                        self.passes[*draw_pass_id].paint_dirty = dirty;
-                        self.passes[*draw_pass_id].repaint_requested = requested;
+                        self.repaint_pass(*draw_pass_id);
                         continue;
                     }
                 }
             }
             let uniforms_gen = self.next_uniform_gen();
-            self.passes[*draw_pass_id].set_time(pass_time, uniforms_gen);
+            self.passes[*draw_pass_id].set_time(time_now, uniforms_gen);
             match self.passes[*draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {}
                 CxDrawPassParent::Window(window_id) => {
@@ -997,11 +935,7 @@ impl Cx {
                     let mut d3d11_window = d3d11_window;
                     d3d11_window.win32_window.apply_window_visuals(visuals);
 
-                    // A Windows window has no OS caption, so we draw its caption buttons ourselves.
-                    window.draws_chrome_buttons = true;
-                    window.os_dpi_factor = Some(d3d11_window.window_geom.dpi_factor);
-                    window.window_geom =
-                        window.native_window_geom_to_layout(d3d11_window.window_geom.clone());
+                    window.window_geom = d3d11_window.window_geom.clone();
                     d3d11_windows.push(d3d11_window);
                     window.is_created = true;
                     geom_changes.push(WindowGeomChangeEvent {
@@ -1456,7 +1390,7 @@ impl CxGameInputApi for Cx {
 impl CxOsApi for Cx {
     fn init_cx_os(&mut self) {
         self.os.start_time = Some(Instant::now());
-        if let Some(item) = crate::app_meta::package_dir() {
+        if let Some(item) = std::option_env!("MAKEPAD_PACKAGE_DIR") {
             self.package_root = Some(item.to_string());
         }
 
@@ -1472,7 +1406,6 @@ impl CxOsApi for Cx {
     }
 
     fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
-        if self.script_data.std.host_io_only() { return; }
         crate::error!("open_url not implemented on this platform");
     }
 }
@@ -1485,9 +1418,6 @@ pub struct CxOs {
     /// everything, stamp wall-now. Twin of the macOS backend's link_scope.
     pub(crate) link_scope: Option<WindowId>,
     pub(crate) link_flip_time: Option<f64>,
-    /// The flip the app clock last stepped for and the app-time of the beat
-    /// that stepped it (see `Win32Event::Beat`).
-    pub(crate) clock_step: Option<(f64, f64)>,
     pub(crate) start_time: Option<Instant>,
     pub(crate) media: CxWindowsMedia,
     pub(crate) d3d11_device: Option<ID3D11Device>,

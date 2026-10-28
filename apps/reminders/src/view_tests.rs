@@ -55,18 +55,6 @@ fn finish_push(view: &mut RemindersView, cx: &mut Cx, id: LiveId) {
     view.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
 }
 
-fn open_twelve_in_compact_layout(view: &mut RemindersView, cx: &mut Cx) {
-    view.apply_layout(cx, dvec2(402.0, 780.0));
-    finish_push(view, cx, live_id!(list_view));
-    open_twelve(view, cx);
-    finish_push(view, cx, live_id!(detail_view));
-}
-
-fn send_action_from(view: &mut RemindersView, cx: &mut Cx, uid: WidgetUid, action: impl WidgetActionTrait) {
-    let actions = cx.capture_actions(|cx| cx.widget_action(uid, action));
-    view.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
-}
-
 #[test]
 fn compact_done_preserves_every_unedited_field() {
     let (mut cx, root) = root();
@@ -129,8 +117,10 @@ fn resize_preserves_raw_fields_selection_filter_and_scroll_then_cancel_discards(
         .set_selected_item(&mut cx, 3);
     form.check_box(&mut cx, ids!(fields.organization.flag))
         .set_active(&mut cx, false, Animate::No);
-    view.priority_sel = 1;
-    view.show_priority(&mut cx, &form);
+    form.widget(&mut cx, ids!(fields.organization.priority))
+        .borrow_mut::<GlassSegmented>()
+        .unwrap()
+        .set_selected(&mut cx, 1);
     view.list_parent(&mut cx, false)
         .portal_list(&mut cx, ids!(rows))
         .set_first_id_and_scroll(3, -12.0);
@@ -168,13 +158,13 @@ fn resize_preserves_raw_fields_selection_filter_and_scroll_then_cancel_discards(
         assert!(!form
             .check_box(&mut cx, ids!(fields.organization.flag))
             .active(&mut cx));
-        assert_eq!(view.priority_sel, 1);
-        assert!(form
-            .widget(&mut cx, ids!(fields.organization.priority.p1.pill))
-            .visible());
-        assert!(!form
-            .widget(&mut cx, ids!(fields.organization.priority.p0.pill))
-            .visible());
+        assert_eq!(
+            form.widget(&mut cx, ids!(fields.organization.priority))
+                .borrow::<GlassSegmented>()
+                .unwrap()
+                .selected(),
+            1
+        );
         let list = view
             .list_parent(&mut cx, view.nav.layout.is_compact())
             .portal_list(&mut cx, ids!(rows));
@@ -239,55 +229,6 @@ fn home_new_and_wide_draft_reach_detail_after_both_stack_transitions() {
         assert_eq!(nav.current_view(), Some(live_id!(list_view)));
         assert!(!nav.is_transitioning());
     }
-}
-
-#[test]
-fn compact_back_on_the_detail_pops_to_the_list_rather_than_home() {
-    let (mut cx, root) = root();
-    let mut view = root.borrow_mut::<RemindersView>().unwrap();
-    open_twelve_in_compact_layout(&mut view, &mut cx);
-    let nav = view.view.stack_navigation(&cx, ids!(compact.nav));
-    let detail_uid = nav.view_by_id(&mut cx, live_id!(detail_view)).widget_uid();
-    send_action_from(&mut view, &mut cx, detail_uid, StackNavigationAction::Pop);
-    assert!(view.draft.is_none());
-    assert_eq!(view.nav.current(), Route::List(Filter::Today));
-    assert_eq!(nav.destination_view(), Some(live_id!(list_view)));
-}
-
-#[test]
-fn compact_interactive_pop_goes_back_once_when_committed_and_not_when_cancelled() {
-    let (mut cx, root) = root();
-    let mut view = root.borrow_mut::<RemindersView>().unwrap();
-    open_twelve_in_compact_layout(&mut view, &mut cx);
-    let nav = view.view.stack_navigation(&cx, ids!(compact.nav));
-    let nav_uid = nav.widget_uid();
-    let detail_uid = nav.view_by_id(&mut cx, live_id!(detail_view)).widget_uid();
-
-    send_action_from(&mut view, &mut cx, nav_uid, StackNavigationTransitionAction::InteractivePopStarted);
-    send_action_from(&mut view, &mut cx, nav_uid, StackNavigationTransitionAction::InteractivePopCancelled);
-    assert!(view.draft.is_some());
-    assert_eq!(view.nav.current(), Route::Detail);
-    assert_eq!(nav.current_view(), Some(live_id!(detail_view)));
-    assert!(!nav.is_transitioning());
-
-    // Tests can't start a real gesture, so a timed pop to the list stands in for the stack's own.
-    send_action_from(&mut view, &mut cx, nav_uid, StackNavigationTransitionAction::InteractivePopStarted);
-    nav.pop_to_view(&mut cx, live_id!(list_view));
-    send_action_from(&mut view, &mut cx, nav_uid, StackNavigationTransitionAction::InteractivePopCommitted);
-    assert!(view.draft.is_none());
-    assert_eq!(view.nav.current(), Route::List(Filter::Today));
-    send_action_from(&mut view, &mut cx, detail_uid, StackNavigationTransitionAction::HideEnd(nav_uid));
-    assert_eq!(nav.current_view(), Some(live_id!(list_view)));
-    assert!(!nav.is_transitioning(), "the detail must not be pushed back");
-
-    // Escape closing the draft mid-swipe already went back, so the commit mustn't go home too.
-    open_twelve(&mut view, &mut cx);
-    finish_push(&mut view, &mut cx, live_id!(detail_view));
-    send_action_from(&mut view, &mut cx, nav_uid, StackNavigationTransitionAction::InteractivePopStarted);
-    let escape = KeyEvent { key_code: KeyCode::Escape, ..Default::default() };
-    view.handle_event(&mut cx, &Event::KeyDown(escape), &mut Scope::empty());
-    send_action_from(&mut view, &mut cx, nav_uid, StackNavigationTransitionAction::InteractivePopCommitted);
-    assert_eq!(view.nav.current(), Route::List(Filter::Today));
 }
 
 #[test]

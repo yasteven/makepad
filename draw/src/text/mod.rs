@@ -1,6 +1,4 @@
 pub mod color;
-#[cfg(target_os = "macos")]
-pub(crate) mod coretext;
 pub mod font;
 pub mod font_atlas;
 pub mod font_face;

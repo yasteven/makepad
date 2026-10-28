@@ -28,9 +28,9 @@ pub use crate::{
     draw_list_2d::{DrawList2d, DrawListExt, ManyInstances, Redrawing, RedrawingApi},
     image_cache::{
         decode_image_from_data, evict_image_from_cache, handle_image_cache_network_responses,
-        has_enough_pixels, image_size_by_data, is_animated_image, is_decoding_image,
+        image_size_by_data,
         looks_like_svg, load_image_file_by_path_async, load_image_from_cache,
-        load_image_from_data_async, load_image_from_data_async_at_size,
+        load_image_from_data_async,
         load_image_http_by_url_async, process_async_image_load, AsyncImageLoad, AsyncLoadResult,
         ImageBuffer, ImageCache, ImageCacheImpl, ImageError, JpgDecodeErrors, PngDecodeErrors,
     },
@@ -69,7 +69,6 @@ pub use crate::shader::draw_svg::DrawSvg;
 pub fn script_mod(vm: &mut ScriptVm) -> ScriptValue {
     crate::turtle::script_mod(vm);
     crate::shader::sdf::script_mod(vm);
-    crate::shader::surface::script_mod(vm);
     crate::geometry::script_mod(vm);
     crate::shader::draw_quad::script_mod(vm);
     crate::shader::draw_cube::script_mod(vm);

@@ -4,7 +4,10 @@ use super::linux_media::CxLinuxMedia;
 use super::linux_video_player::LinuxVideoPlayer;
 
 use crate::{cx::Cx, makepad_live_id::LiveId, opengl_cx::OpenglCx, CxOsApi, OpenUrlInPlace};
-use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use crate::sols_browser_time::Instant;
 // Import OpenglCx from x11 for the unified type
 
 /// Scroll distance in logical pixels for one wheel detent, roughly three lines of
@@ -182,7 +185,7 @@ impl Cx {
 impl CxOsApi for Cx {
     fn init_cx_os(&mut self) {
         self.os.start_time = Some(Instant::now());
-        if let Some(item) = crate::app_meta::package_dir() {
+        if let Some(item) = std::option_env!("MAKEPAD_PACKAGE_DIR") {
             self.package_root = Some(item.to_string());
         }
         self.native_load_dependencies();
@@ -195,7 +198,6 @@ impl CxOsApi for Cx {
     }
 
     fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
-        if self.script_data.std.host_io_only() { return; }
         crate::error!("open_url not implemented on this platform");
     }
 }

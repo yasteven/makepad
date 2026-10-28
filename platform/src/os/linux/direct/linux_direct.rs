@@ -19,11 +19,10 @@ use {
     },
     std::cell::RefCell,
     std::rc::Rc,
-    std::time::Instant,
+    crate::sols_browser_time::Instant,
 };
 #[cfg(use_vulkan)]
 use crate::event::WindowGeomChangeEvent;
-use crate::direct_clipboard::{ClipboardKey, DirectClipboard};
 
 /// Retry deadline while the source output's image or the frame fence is in
 /// flight: short enough to keep a 240 Hz source paced by its own vblank, and
@@ -300,29 +299,6 @@ impl Cx {
                     return EventFlow::Exit;
                 }
                 self.keyboard.process_key_down(e.clone());
-                // No display server, no system clipboard: this process owns
-                // it (direct_clipboard.rs), with X11's chords.
-                match self.os.clipboard.key_down(&e) {
-                    Some(ClipboardKey::Copy) | Some(ClipboardKey::Cut) => {
-                        let cut = e.key_code == crate::event::KeyCode::KeyX;
-                        let response = Rc::new(RefCell::new(None));
-                        let clip = crate::event::TextClipboardEvent { response: response.clone() };
-                        self.call_event_handler(&if cut { Event::TextCut(clip) } else { Event::TextCopy(clip) });
-                        let text = response.borrow_mut().take();
-                        if let Some(text) = text {
-                            self.os.clipboard.set(text);
-                        }
-                    }
-                    Some(ClipboardKey::Paste(text)) => {
-                        self.call_event_handler(&Event::TextInput(crate::event::TextInputEvent {
-                            input: text,
-                            was_paste: true,
-                            replace_last: false,
-                            ..Default::default()
-                        }));
-                    }
-                    None => {}
-                }
                 self.call_event_handler(&Event::KeyDown(e))
             }
             DirectEvent::KeyUp(e) => {
@@ -501,8 +477,8 @@ impl Cx {
         self.repaint_id += 1;
         for draw_pass_id in &passes_todo {
             let uniforms_gen = self.next_uniform_gen();
-            let time = self.pass_time(direct_app.timers.time_now());
-            self.passes[*draw_pass_id].set_time(time, uniforms_gen);
+            self.passes[*draw_pass_id]
+                .set_time(direct_app.timers.time_now() as f32, uniforms_gen);
             match self.passes[*draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {}
                 CxDrawPassParent::Window(_window_id) => {
@@ -623,7 +599,6 @@ impl Cx {
                     // This console uses raw keyboard TextInput events; it has
                     // no separate native IME window to position or dismiss.
                 }
-                CxOsOp::CopyToClipboard(text) => self.os.clipboard.set(text),
                 CxOsOp::SetCursor(cursor) => {
                     // Apply the final cursor request after event dispatch.
                     // Ancestor hover handlers can request Default before a
@@ -704,14 +679,13 @@ impl Cx {
 
 impl CxOsApi for Cx {
     fn init_cx_os(&mut self) {
-        if let Some(item) = crate::app_meta::package_dir() {
+        if let Some(item) = std::option_env!("MAKEPAD_PACKAGE_DIR") {
             self.package_root = Some(item.to_string());
         }
         self.native_load_dependencies();
     }
 
     fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
-        if self.script_data.std.host_io_only() { return; }
         crate::error!("open_url not implemented on this platform");
     }
 
@@ -724,8 +698,6 @@ impl CxOsApi for Cx {
 
 pub struct CxOs {
     pub(crate) media: CxLinuxMedia,
-    /// The session's clipboard (direct_clipboard.rs).
-    pub(crate) clipboard: DirectClipboard,
     #[cfg(use_vulkan)]
     pub(crate) stdin_timers: crate::os::shared_framebuf::PollTimers,
     pub(crate) start_time: Instant,
@@ -752,7 +724,6 @@ impl Default for CxOs {
         Self {
             start_time: Instant::now(),
             media: Default::default(),
-            clipboard: Default::default(),
             #[cfg(use_vulkan)]
             stdin_timers: Default::default(),
             opengl_cx: None,

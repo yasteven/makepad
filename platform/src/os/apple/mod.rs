@@ -22,14 +22,13 @@ pub mod apple_game_input;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod apple_geo;
 pub mod apple_media;
-// AVFoundation playback exists on tvOS too, and cx_api.rs calls into it there.
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod apple_video_playback;
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod apple_video_player;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod apple_webview;
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod apple_yuv_metal;
 #[cfg(target_os = "macos")]
 pub mod audio_tap;

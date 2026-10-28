@@ -105,8 +105,7 @@ pub struct CxDrawShaders {
     /// with the app heap's and must never hit its entries.
     pub cache_object_id_to_shader: HashMap<(usize, ScriptObject), DrawShaderId>,
     pub cache_functions_to_shader: LiveIdMap<LiveId, DrawShaderId>,
-    // Every lookup hashes whole generated shader sources, so use a fast hasher.
-    pub cache_code_to_shader: HashMap<CxDrawShaderCode, DrawShaderId, foldhash::fast::RandomState>,
+    pub cache_code_to_shader: HashMap<CxDrawShaderCode, DrawShaderId>,
     //pub ptr_to_item: HashMap<DrawShaderPtr, CxDrawShaderItem>,
     //pub fingerprints: Vec<DrawShaderFingerprint>,
     //pub error_set: HashSet<DrawShaderPtr>,
@@ -1347,6 +1346,14 @@ impl CxDrawShaderMapping {
             );
         }
 
+        // Check if shader uses draw_pass->time (requires repaint every frame)
+        let uses_time = match &code {
+            CxDrawShaderCode::Combined { code } => code.contains("draw_pass->time"),
+            CxDrawShaderCode::Separate { vertex, fragment } => {
+                vertex.contains("draw_pass->time") || fragment.contains("draw_pass->time")
+            }
+        };
+
         CxDrawShaderMapping {
             source,
             code,
@@ -1365,7 +1372,7 @@ impl CxDrawShaderMapping {
             uniform_buffers,
             samplers: output.samplers.clone(),
             texture_sampler_indices,
-            uses_time: output.uses_time,
+            uses_time,
             rect_pos,
             rect_size,
             draw_clip,

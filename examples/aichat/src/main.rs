@@ -17,7 +17,7 @@ use makepad_widgets::*;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-app_main!(App, font_assets: [MATH_VIEW_FONT_ASSET]);
+app_main!(App);
 
 script_mod! {
     use mod.prelude.widgets.*

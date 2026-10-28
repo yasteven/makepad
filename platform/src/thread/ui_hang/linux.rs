@@ -1,7 +1,14 @@
 //! SIGPROF backtrace from the interrupted context. The handler uses a bounded
 //! frame-pointer walk and kernel-validated reads, not libc's allocating/lazy
 //! loader unwinder. Symbolization happens on the watchdog after the handler.
-use std::{ffi::{c_void, c_char, CStr}, sync::{atomic::{AtomicUsize, Ordering}, OnceLock}, time::{Duration, Instant}};
+use std::ffi::c_void;
+use std::ffi::c_char;
+use std::ffi::CStr;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::OnceLock;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
 
 const SIGPROF: i32 = 27;
 #[cfg(target_arch = "x86_64")]

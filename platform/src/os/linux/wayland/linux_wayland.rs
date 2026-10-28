@@ -10,7 +10,7 @@ use crate::cx_native::EventFlow;
 use crate::egl_sys::NativeDisplayType;
 use crate::gl_sys::TEXTURE0;
 use crate::makepad_live_id::*;
-use crate::makepad_math::{dvec2, Rect};
+use crate::makepad_math::{dvec2, Rect, Vec2d};
 use crate::opengl_cx::OpenglCx;
 use crate::os::linux::gstreamer_sys::LibGStreamer;
 use crate::os::linux::linux_video_playback::{
@@ -288,7 +288,7 @@ impl WaylandCx {
                     .iter()
                     .position(|window| window.window_id == re.window_id);
                 // Wayland's native surface state does not know the geometry of
-                // Makepad-drawn buttons. The DPI conversion below fills it in.
+                // Makepad-drawn buttons. Populate it after DPI conversion below.
                 re.new_geom.window_chrome_buttons = Rect::default();
 
                 if let Some(window_index) = window_index {
@@ -317,13 +317,16 @@ impl WaylandCx {
                     {
                         let cx_window = &mut cx.windows[re.window_id];
                         cx_window.uses_client_side_decorations = uses_csd;
-                        // Also in fullscreen: we keep drawing our chrome there, and a click
-                        // lands on a button rather than starting a caption drag only if the
-                        // geom says where the buttons are.
-                        cx_window.draws_chrome_buttons = uses_csd;
                         cx_window.wayland_is_fullscreen = is_fullscreen;
                         cx_window.os_dpi_factor = Some(re.new_geom.dpi_factor);
                         re.new_geom = cx_window.native_window_geom_to_layout(re.new_geom);
+                    }
+                    if uses_csd && !is_fullscreen {
+                        const BUTTONS_SIZE: Vec2d = Vec2d { x: 138.0, y: 29.0 };
+                        re.new_geom.window_chrome_buttons = Rect {
+                            pos: dvec2(re.new_geom.inner_size.x - BUTTONS_SIZE.x, 0.0),
+                            size: BUTTONS_SIZE,
+                        };
                     }
                     re.old_geom.window_chrome_buttons = old_chrome_buttons;
                     cx.windows[re.window_id].window_geom = re.new_geom.clone();
@@ -379,7 +382,7 @@ impl WaylandCx {
                     // the bound, next-frame and draw events run again at the
                     // timer's cadence (presents stay gated per window in
                     // handle_repaint) and a pending grab is always served.
-                    let since = *state.frame_gate_since.get_or_insert_with(std::time::Instant::now);
+                    let since = *state.frame_gate_since.get_or_insert_with(crate::sols_browser_time::Instant::now);
                     let grab_pending = self.cx.borrow().screenshot_requests.len() > 0;
                     if since.elapsed() < FRAME_GATE_STALL_LIMIT && !grab_pending {
                         return EventFlow::Wait;
@@ -389,7 +392,7 @@ impl WaylandCx {
                 }
                 // What this cycle costs the CPU tells the pacer whether OpenGL frames
                 // are slow enough to be started ahead of their callback.
-                let cycle_started = std::time::Instant::now();
+                let cycle_started = crate::sols_browser_time::Instant::now();
                 state.presents_this_cycle = 0;
                 if let Some(opengl_cx) = self.cx.borrow().os.opengl_cx.as_ref() {
                     opengl_cx.swap_wait.set(std::time::Duration::ZERO);
@@ -496,16 +499,6 @@ impl WaylandCx {
                 cx.call_event_handler(&Event::MouseUp(e.into()));
                 cx.fingers.mouse_up(button);
                 cx.fingers.cycle_hover_area(live_id!(mouse).into());
-            }
-            XlibEvent::MouseLeave(mut e) => {
-                let mut cx = self.cx.borrow_mut();
-                cx.dpi_override_scale(&mut e.abs, e.window_id);
-                cx.call_event_handler(&Event::MouseLeave(e));
-                // Same pair as the MouseMove arm: the hover the widgets just dropped has to
-                // be committed, or `hover_last` still names it and the next motion reads as
-                // HoverOver instead of a fresh HoverIn.
-                cx.fingers.cycle_hover_area(live_id!(mouse).into());
-                cx.fingers.switch_captures();
             }
             XlibEvent::Scroll(mut e) => {
                 let mut cx = self.cx.borrow_mut();
@@ -871,15 +864,11 @@ impl WaylandCx {
                     // `get_pass_rect()` produce NaN once the flag is on.
                     let native_geom = window.window_geom.clone();
                     let uses_client_side_decorations = window.uses_client_side_decorations;
-                    // A window is never born fullscreen -- creation only ever asks for
-                    // maximize -- but read it off the window rather than hardcoding false,
-                    // so this keeps tracking whatever `WaylandWindow::new` decided.
-                    let wayland_is_fullscreen = window.is_fullscreen;
+                    let is_fullscreen = window.is_fullscreen;
                     state.windows.push(window);
                     let cx_window = &mut cx.windows[window_id];
                     cx_window.uses_client_side_decorations = uses_client_side_decorations;
-                    cx_window.draws_chrome_buttons = uses_client_side_decorations;
-                    cx_window.wayland_is_fullscreen = wayland_is_fullscreen;
+                    cx_window.wayland_is_fullscreen = is_fullscreen;
                     cx_window.os_dpi_factor = Some(native_geom.dpi_factor);
                     let layout_geom = cx_window.native_window_geom_to_layout(native_geom);
                     cx_window.window_geom = layout_geom;
@@ -1371,11 +1360,9 @@ impl WaylandCx {
     pub(crate) fn handle_repaint(&self, state: &mut WaylandState) {
         let mut cx = self.cx.borrow_mut();
         // Skip the eglMakeCurrent + full pass-list scan when there is nothing to draw.
-        // Time-animated passes don't turn dirty until compute_pass_repaint_order,
-        // so demo_time_repaint must keep us rendering.
+        // demo_time_repaint forces a redraw of time-animated passes (see
+        // compute_pass_repaint_order), so it must keep us rendering.
         if !cx.any_passes_dirty() && !cx.demo_time_repaint {
-            // This still binds our context while retirement work is pending.
-            cx.maintain_instance_retirements();
             return;
         }
         if let Some(opengl_cx) = cx.os.opengl_cx.as_ref() {
@@ -1387,8 +1374,7 @@ impl WaylandCx {
         for draw_pass_id in &passes_todo {
             let now = state.time_now();
             let uniforms_gen = cx.next_uniform_gen();
-            let time = cx.pass_time(now);
-            cx.passes[*draw_pass_id].set_time(time, uniforms_gen);
+            cx.passes[*draw_pass_id].set_time(now as f32, uniforms_gen);
             let parent = cx.passes[*draw_pass_id].parent.clone();
             match parent {
                 CxDrawPassParent::Xr => {}
@@ -1573,10 +1559,6 @@ impl WaylandCx {
                     }
                 }
             }
-        }
-        // If no render ran the retirement step under this beat's repaint_id, run it here.
-        if cx.draw_lists.1.retirement_frame != Some(cx.repaint_id) {
-            cx.maintain_instance_retirements();
         }
     }
 }

@@ -8,16 +8,15 @@ use crate::{
     thread::{to_ui_bounded, TaskHandle, ThreadOptions, ThreadSpawner, ToUIReceiver},
 };
 use makepad_studio_protocol::SharedSwapchain;
-use std::{
-    collections::VecDeque,
-    num::NonZeroUsize,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{sync_channel, SyncSender, TrySendError},
-        Arc,
-    },
-    time::Duration,
-};
+use std::collections::VecDeque;
+use std::num::NonZeroUsize;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::sync_channel;
+use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::TrySendError;
+use std::sync::Arc;
+use crate::sols_browser_time::Duration;
 
 const QUEUED_REQUESTS: usize = 32;
 

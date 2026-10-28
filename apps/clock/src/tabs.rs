@@ -1,8 +1,7 @@
 //! The floating navigation capsule's four targets: an icon over a label in
 //! four equal cells, the selected cell's capsule sliding under them
-//! (260 ms, ease-out) while the labels stay put. The bar's opaque surface
-//! is the parent drawn under this widget; this only paints the selected
-//! container and the crisp foreground.
+//! (260 ms, ease-out) while the labels stay put. The glass surface is a
+//! sibling drawn under this widget; this only paints crisp foreground.
 use makepad_widgets::*;
 
 script_mod! {
@@ -10,20 +9,19 @@ script_mod! {
     mod.widgets.PhoneTabsBase = #(PhoneTabs::register_widget(vm))
     mod.widgets.PhoneTabs = set_type_default() do mod.widgets.PhoneTabsBase {
         width: 370 height: 64
-        label +: {text_style: theme.font_bold{font_size: 9} color: theme.color_text}
+        label +: {text_style: theme.font_bold{font_size: 8.25} color: theme.color_text}
         capsule +: {
-            color: #c86400
+            color: theme.color_inset
             pixel: fn() {
                 let sdf = Sdf2d.viewport(self.pos * self.rect_size)
-                // 12 pt corners: the bar's 16 less the 4 pt inset.
-                sdf.box(0.0, 0.0, self.rect_size.x, self.rect_size.y, 6.0)
+                sdf.box(0.0, 0.0, self.rect_size.x, self.rect_size.y, 14.0)
                 sdf.fill(self.color)
                 return sdf.result
             }
         }
         accent: #c86400
-        ink: theme.color_text
-        capsule_alpha: 0.14
+        secondary: theme.color_text_disabled
+        capsule_alpha: 0.35
         icon_clock +: {svg: crate_resource("self:resources/icons/clock.svg") color: theme.color_text_disabled}
         icon_alarm +: {svg: crate_resource("self:resources/icons/alarm.svg") color: theme.color_text_disabled}
         icon_stopwatch +: {svg: crate_resource("self:resources/icons/stopwatch.svg") color: theme.color_text_disabled}
@@ -78,11 +76,8 @@ pub struct PhoneTabs {
     on_timer: DrawSvg,
     #[live]
     accent: Vec4f,
-    /// The theme's text colour: the inactive ink is it at 72 %, and the
-    /// active ink is the accent pulled toward it (darker on a light bar,
-    /// lighter on a dark one) — both ≥ 4.5:1 on the bar and its container.
     #[live]
-    ink: Vec4f,
+    secondary: Vec4f,
     #[live(0.35)]
     capsule_alpha: f32,
     #[rust]
@@ -154,7 +149,7 @@ impl Widget for PhoneTabs {
             }
             Hit::FingerUp(e) if e.is_primary_hit() => {
                 if let (Some(pressed), Some(up)) = (self.pressed.take(), self.cell_at(cx, e.abs)) {
-                    if pressed == up && !e.cancelled {
+                    if pressed == up {
                         self.set_active(cx, up, true);
                         cx.widget_action(self.uid, PhoneTabsAction::Selected(up));
                     }
@@ -171,27 +166,15 @@ impl Widget for PhoneTabs {
         // Four equal cells inside 4 pt padding; the capsule fills the cell.
         let inner = Rect { pos: r.pos + dvec2(4.0, 4.0), size: r.size - dvec2(8.0, 8.0) };
         let cell_w = inner.size.x / 4.0;
-        let dark = self.ink.x * 0.2126 + self.ink.y * 0.7152 + self.ink.z * 0.0722 > 0.5;
-        let pull = if dark { 0.6 } else { 0.45 };
-        let a = self.accent;
-        let active = vec4(a.x + (self.ink.x - a.x) * pull, a.y + (self.ink.y - a.y) * pull, a.z + (self.ink.z - a.z) * pull, 1.0);
-        let inactive = vec4(self.ink.x, self.ink.y, self.ink.z, 0.72);
-        for icon in [&mut self.icon_clock, &mut self.icon_alarm, &mut self.icon_stopwatch, &mut self.icon_timer] {
-            icon.color = inactive;
-        }
-        for icon in [&mut self.on_clock, &mut self.on_alarm, &mut self.on_stopwatch, &mut self.on_timer] {
-            icon.color = active;
-        }
         let base = self.capsule.color;
         self.capsule.color = vec4(base.x, base.y, base.z, self.capsule_alpha);
         self.capsule.draw_abs(cx, Rect { pos: dvec2(inner.pos.x + cell_w * self.capsule_pos, inner.pos.y), size: dvec2(cell_w, inner.size.y) });
         self.capsule.color = base;
         for i in 0..4 {
             let cell = Rect { pos: dvec2(inner.pos.x + cell_w * i as f64, inner.pos.y), size: dvec2(cell_w, inner.size.y) };
-            let ink = if i == self.active { active } else { inactive };
-            // Two resident glyphs per tab, each keeping the one tint set
-            // above for the whole pass: the active one is a sibling, not a
-            // re-tint of the same DrawSvg between draws.
+            let ink = if i == self.active { self.accent } else { self.secondary };
+            // Two resident tints per glyph: the SVG's colour is bound at
+            // evaluation, so the active one is a sibling, not a re-tint.
             let icon = match (i, i == self.active) {
                 (0, false) => &mut self.icon_clock,
                 (1, false) => &mut self.icon_alarm,
@@ -202,15 +185,15 @@ impl Widget for PhoneTabs {
                 (2, true) => &mut self.on_stopwatch,
                 (_, true) => &mut self.on_timer,
             };
-            // Icon 24 above the 12/16 label, 2 apart, the pair centred.
-            let stack_h = 24.0 + 2.0 + 16.0;
+            // Icon 24 above the 11 pt label, 3 apart, the pair centred.
+            let stack_h = 24.0 + 3.0 + 13.0;
             let top = cell.pos.y + (cell.size.y - stack_h) * 0.5;
             icon.draw_abs(cx, Rect { pos: dvec2(cell.pos.x + (cell_w - 24.0) * 0.5, top), size: dvec2(24.0, 24.0) });
             self.label.color = ink;
             if let Some(run) = self.label.prepare_single_line_run(cx, LABELS[i]) {
                 let ink_h = (run.ascender_in_lpxs - run.descender_in_lpxs) as f64;
                 let x = cell.pos.x + (cell_w - run.width_in_lpxs as f64) * 0.5;
-                self.label.draw_abs(cx, dvec2(x, top + 26.0 + (16.0 - ink_h) * 0.5), LABELS[i]);
+                self.label.draw_abs(cx, dvec2(x, top + 27.0 + (13.0 - ink_h) * 0.5), LABELS[i]);
             }
         }
         cx.end_turtle_with_area(&mut self.area);

@@ -74,11 +74,10 @@ import android.text.SpannableStringBuilder;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.window.OnBackInvokedCallback;
-import android.window.OnBackInvokedDispatcher;
 
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -427,20 +426,9 @@ class MakepadSurface
         setOnKeyListener(this);
         setOnLongClickListener(this);
 
-        Selection.setSelection(mEditable, 0, 0);
-    }
-
-    // Only while attached, since a recreated activity can keep using this window.
-    @Override
-    protected void onAttachedToWindow() {
-        super.onAttachedToWindow();
         getViewTreeObserver().addOnGlobalLayoutListener(this);
-    }
 
-    @Override
-    protected void onDetachedFromWindow() {
-        getViewTreeObserver().removeOnGlobalLayoutListener(this);
-        super.onDetachedFromWindow();
+        Selection.setSelection(mEditable, 0, 0);
     }
 
     @Override
@@ -505,18 +493,7 @@ class MakepadSurface
             }
         }
 
-        // Every sample the input system batched into this move goes first
-        // (a fling's velocity is read from all of them), then the event.
-        if (actionMasked == MotionEvent.ACTION_MOVE) {
-            int history = event.getHistorySize();
-            for (int h = 0; h < history; h++) {
-                long nanos = event.getHistoricalEventTime(h) * 1000000L;
-                MakepadNative.surfaceOnTouchHistory(event, h, nanos);
-            }
-        }
-        // (The build's SDK predates getEventTimeNanos: millisecond times.)
-        long nanos = event.getEventTime() * 1000000L;
-        MakepadNative.surfaceOnTouchNanos(event, nanos);
+        MakepadNative.surfaceOnTouch(event);
         return retval;
     }
 
@@ -581,10 +558,6 @@ class MakepadSurface
     @SuppressWarnings("deprecation")
     @Override
     public boolean onKey(View v, int keyCode, KeyEvent event) {
-        // API 36 still passes the back key on to us after the activity's back callback got it as Back.
-        if (keyCode == KeyEvent.KEYCODE_BACK && MakepadActivity.mBackGoesThroughCallback) {
-            return true;
-        }
         if (event.getAction() == KeyEvent.ACTION_DOWN && keyCode != 0) {
             int metaState = event.getMetaState();
             boolean isRepeat = event.getRepeatCount() > 0;
@@ -765,19 +738,6 @@ class MakepadSurface
         mInputConnection = new MakepadInputConnection(this, true);
 
         return mInputConnection;
-    }
-
-    void takeImeStateFrom(MakepadSurface previous) {
-        mEditable.replace(0, mEditable.length(), previous.mEditable.toString());
-        Selection.setSelection(mEditable,
-            Math.max(0, Selection.getSelectionStart(previous.mEditable)),
-            Math.max(0, Selection.getSelectionEnd(previous.mEditable)));
-        mInputMode = previous.mInputMode;
-        mAutocapitalize = previous.mAutocapitalize;
-        mAutocorrect = previous.mAutocorrect;
-        mReturnKeyType = previous.mReturnKeyType;
-        mIsMultiline = previous.mIsMultiline;
-        mIsSecure = previous.mIsSecure;
     }
 
     // Configure keyboard settings - called from Rust before showing keyboard
@@ -1068,11 +1028,12 @@ public class MakepadActivity
 
     // Desired system-bar (status/navigation bar) icon tint, set from Rust via
     // setSystemBarAppearance(). true = dark icons (for light app backgrounds).
-    private static boolean mSystemBarDarkIcons = false;
+    private boolean mSystemBarDarkIcons = false;
 
-    // File/folder dialog request codes we're still waiting on; any other onActivityResult
-    // isn't ours. Static, since the result can land on a recreated activity.
-    private static final HashSet<Integer> mFileDialogRequests = new HashSet<>();
+    // File/folder dialogs (Storage Access Framework). Request codes we handed
+    // out and are still waiting on; anything else arriving in onActivityResult
+    // belongs to somebody else and must be left alone.
+    private final HashSet<Integer> mFileDialogRequests = new HashSet<>();
 
     // clipboard actions (ActionMode for copy/paste/cut)
     private ActionMode mActionMode;
@@ -1102,15 +1063,6 @@ public class MakepadActivity
     private SelectionHandleView mSelectionHandleStart;
     private SelectionHandleView mSelectionHandleEnd;
     private int mSelectionHandleSizePx;
-
-    // back callback (API 33+), whose gesture states and edge match onBackGesture in android_jni.rs
-    private static final int BACK_GESTURE_START = 0;
-    private static final int BACK_GESTURE_MOVE = 1;
-    private static final int BACK_GESTURE_CANCEL = 2;
-    private static final int BACK_EDGE_NONE = 2;
-    private OnBackInvokedCallback mBackCallback;
-    // Set by the callback's first call, since the system ignores it unless the manifest opts in.
-    static boolean mBackGoesThroughCallback;
 
     static {
         System.loadLibrary("makepad");
@@ -1289,10 +1241,6 @@ public class MakepadActivity
         // calls applyFullScreen(true) to hide bars and extend content behind them.
 
         view = new MakepadSurface(this);
-        Object previousView = getLastNonConfigurationInstance();
-        if (previousView instanceof MakepadSurface) {
-            view.takeImeStateFrom((MakepadSurface) previousView);
-        }
         // Put it inside a parent layout which can resize it using padding
         ResizingLayout layout = new ResizingLayout(this);
         FrameLayout surfaceContentLayout = new FrameLayout(this);
@@ -1362,7 +1310,7 @@ public class MakepadActivity
         mSelectionHandleOverlay.setVisibility(View.GONE);
         mRootLayout.addView(mSelectionHandleOverlay);
 
-        mSelectionHandleSizePx = selectionHandleSizePx();
+        mSelectionHandleSizePx = Math.max(24, (int) (getResources().getDisplayMetrics().density * 24.0f));
         mSelectionHandleStart = new SelectionHandleView(this, 0xFF4A90E2, mSelectionHandleSizePx);
         mSelectionHandleEnd = new SelectionHandleView(this, 0xFF4A90E2, mSelectionHandleSizePx);
         mSelectionHandleStart.setOnTouchListener(createSelectionHandleDragListener(SELECTION_HANDLE_START));
@@ -1373,94 +1321,27 @@ public class MakepadActivity
         setContentView(mRootLayout);
         restoreWarmResumeSurfaceSnapshotIfAvailable();
         updateTaskDescription();
-        applySystemBarAppearance();
-        // An IME animation from a previous activity never ends in this one.
-        MakepadImeInsets.imeAnimationInProgress = false;
 
-        // Set up before attaching, since a running app calls into this activity right away.
+        MakepadNative.activityOnCreate(this);
+        registerPhysicalKeyboardListener();
+
         mVideoPlaybackThread = new HandlerThread("VideoPlayerThread");
         mVideoPlaybackThread.start(); // TODO: only start this if its needed.
         mVideoPlaybackHandler = new Handler(mVideoPlaybackThread.getLooper());
         mVideoPlayerRunnables = new HashMap<Long, VideoPlayerRunnable>();
 
-        MakepadNative.activityOnCreate(this);
-        registerPhysicalKeyboardListener();
 
-        // If the manifest opts in, API 33+ sends Back here instead of to onBackPressed(). On 34+ we also
-        // hear the gesture's progress, through reflection since we compile against SDK 33.
-        if (Build.VERSION.SDK_INT >= 33) {
-            mBackCallback = MakepadNative::onBackPressed;
-            if (Build.VERSION.SDK_INT >= 34) {
-                try {
-                    Class<?> callbackClass = Class.forName("android.window.OnBackAnimationCallback");
-                    Class<?> backEventClass = Class.forName("android.window.BackEvent");
-                    Method getTouchX = backEventClass.getMethod("getTouchX");
-                    Method getTouchY = backEventClass.getMethod("getTouchY");
-                    Method getProgress = backEventClass.getMethod("getProgress");
-                    Method getSwipeEdge = backEventClass.getMethod("getSwipeEdge");
-                    int[] surfaceOrigin = new int[2];
-                    int[] swipeEdge = new int[1];
-                    mBackCallback = (OnBackInvokedCallback) Proxy.newProxyInstance(
-                        MakepadActivity.class.getClassLoader(),
-                        new Class<?>[] { callbackClass },
-                        (proxy, method, args) -> {
-                            String name = method.getName();
-                            switch (name) {
-                                case "onBackStarted":
-                                case "onBackProgressed":
-                                    mBackGoesThroughCallback = true;
-                                    float touchX = (float) getTouchX.invoke(args[0]);
-                                    float touchY = (float) getTouchY.invoke(args[0]);
-                                    swipeEdge[0] = (int) getSwipeEdge.invoke(args[0]);
-                                    // A back button press comes as a touch at (0, 0), not the NaN BackEvent's docs promise.
-                                    if (touchX == 0 && touchY == 0) {
-                                        touchX = Float.NaN;
-                                        touchY = Float.NaN;
-                                        swipeEdge[0] = BACK_EDGE_NONE;
-                                    }
-                                    // BackEvent's touch point is on the screen, but touches are relative to the surface.
-                                    view.getLocationOnScreen(surfaceOrigin);
-                                    MakepadNative.onBackGesture(
-                                        name.equals("onBackStarted") ? BACK_GESTURE_START : BACK_GESTURE_MOVE,
-                                        touchX - surfaceOrigin[0],
-                                        touchY - surfaceOrigin[1],
-                                        (float) getProgress.invoke(args[0]),
-                                        swipeEdge[0],
-                                        SystemClock.uptimeMillis());
-                                    return null;
-                                case "onBackCancelled":
-                                    MakepadNative.onBackGesture(
-                                        BACK_GESTURE_CANCEL,
-                                        Float.NaN,
-                                        Float.NaN,
-                                        0,
-                                        swipeEdge[0],
-                                        SystemClock.uptimeMillis());
-                                    return null;
-                                case "onBackInvoked":
-                                    MakepadNative.onBackPressed();
-                                    return null;
-                                // The dispatcher keeps callbacks in a map, so the proxy answers these itself.
-                                case "hashCode":
-                                    return System.identityHashCode(proxy);
-                                case "equals":
-                                    return proxy == args[0];
-                                case "toString":
-                                    return "MakepadBackAnimationCallback";
-                                default:
-                                    return null;
-                            }
-                        });
-                } catch (ReflectiveOperationException e) {
-                    Log.w(LOG_TAG, "Predictive back is unavailable, so Back won't animate", e);
-                }
-            }
-            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-                OnBackInvokedDispatcher.PRIORITY_DEFAULT, mBackCallback);
-        }
 
+        String cache_path = this.getCacheDir().getAbsolutePath();
+        String data_path = this.getFilesDir().getAbsolutePath();
+        float density = getResources().getDisplayMetrics().density;
+        boolean isEmulator = this.isEmulator();
+        String androidVersion = Build.VERSION.RELEASE;
+        String buildNumber = Build.DISPLAY;
+        String kernelVersion = this.getKernelVersion();
         int sdkVersion = Build.VERSION.SDK_INT;
-        sendAndroidParams();
+
+        MakepadNative.onAndroidParams(cache_path, data_path, density, isEmulator, androidVersion, buildNumber, kernelVersion);
 
         // Set volume keys to control music stream, we might want make this flexible for app devs
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
@@ -1505,14 +1386,7 @@ public class MakepadActivity
 
     @Override
     protected void onDestroy() {
-        // Android recreates the activity right away for a config change the manifest doesn't
-        // declare, and the running app moves over to the new one, so it must not shut down here.
-        boolean isRecreating = isChangingConfigurations();
         unregisterPhysicalKeyboardListener();
-        if (mBackCallback != null) {
-            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(mBackCallback);
-            mBackCallback = null;
-        }
         if (mCameraPreviewOverlay != null) {
             for (Long videoId : mCameraPreviewViews.keySet()) {
                 MakepadNative.onCameraPreviewSurfaceDestroyed(videoId);
@@ -1546,57 +1420,12 @@ public class MakepadActivity
         }
         cleanupVideoPlaybackState();
         shutdownVideoPlaybackThread();
-        if (!mIsSwitchingActivity && !isRecreating) {
+        if (!mIsSwitchingActivity) {
             cleanupNetworkState();
             shutdownWebSocketsThread();
-            stopLocationUpdates();
         }
         super.onDestroy();
-        if (!isRecreating) {
-            MakepadNative.activityOnDestroy();
-        }
-    }
-
-    // Hands this surface to the activity Android recreates for a config change, so the
-    // new surface can take over its IME state.
-    @Override
-    public Object onRetainNonConfigurationInstance() {
-        return view;
-    }
-
-    @Override
-    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
-        super.onConfigurationChanged(newConfig);
-        int handleSizePx = selectionHandleSizePx();
-        if (handleSizePx != mSelectionHandleSizePx && mSelectionHandleStart != null) {
-            mSelectionHandleSizePx = handleSizePx;
-            for (View handle : new View[] { mSelectionHandleStart, mSelectionHandleEnd }) {
-                ViewGroup.LayoutParams params = handle.getLayoutParams();
-                params.width = handleSizePx;
-                params.height = handleSizePx;
-                handle.setLayoutParams(params);
-            }
-        }
-        // The params carry the new density.
-        sendAndroidParams();
-        reportPhysicalKeyboardIfChanged();
-    }
-
-    private int selectionHandleSizePx() {
-        return Math.max(24, (int) (getResources().getDisplayMetrics().density * 24.0f));
-    }
-
-    private void sendAndroidParams() {
-        String cache_path = this.getCacheDir().getAbsolutePath();
-        String data_path = this.getFilesDir().getAbsolutePath();
-        float density = getResources().getDisplayMetrics().density;
-        boolean isEmulator = this.isEmulator();
-        String androidVersion = Build.VERSION.RELEASE;
-        String buildNumber = Build.DISPLAY;
-
-        // Makepad ignores the kernel version, but the slot stays so the native
-        // signature doesn't change.
-        MakepadNative.onAndroidParams(cache_path, data_path, density, isEmulator, androidVersion, buildNumber, "");
+        MakepadNative.activityOnDestroy();
     }
 
     @Override
@@ -2401,56 +2230,6 @@ public class MakepadActivity
         return "";
     }
 
-    // `cx.haptic_feedback`: 0 click, 1 virtual key, 2 tick (the Pixel
-    // Launcher's EFFECT_CLICK, VIRTUAL_KEY and low tick call sites).
-    public void performHaptic(final int kind) {
-        runOnUiThread(new Runnable() {
-            public void run() {
-                int constant = kind == 1 ? android.view.HapticFeedbackConstants.VIRTUAL_KEY
-                    : kind == 2 ? android.view.HapticFeedbackConstants.CLOCK_TICK
-                    : android.view.HapticFeedbackConstants.CONTEXT_CLICK;
-                getWindow().getDecorView().performHapticFeedback(constant);
-            }
-        });
-    }
-
-    // `cx.open_url`: hand the URL to whatever the system opens it with.
-    // Hosted child processes of a window manager ask the WM for this.
-    public void openUrl(final String url) {
-        runOnUiThread(new Runnable() {
-            public void run() {
-                try {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(intent);
-                } catch (Exception e) {
-                    Log.e("Makepad", "openUrl failed for " + url + ": " + e);
-                }
-            }
-        });
-    }
-
-    // Copy a picked `content://` document into `dest` (a plain file the
-    // app owns), so a process without a JVM can open it. Returns false
-    // when the document cannot be read.
-    public boolean copyContentUri(String uri, String dest) {
-        try (java.io.InputStream in = getContentResolver().openInputStream(Uri.parse(uri));
-             java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
-            if (in == null) {
-                return false;
-            }
-            byte[] buffer = new byte[65536];
-            int n;
-            while ((n = in.read(buffer)) > 0) {
-                out.write(buffer, 0, n);
-            }
-            return true;
-        } catch (Exception e) {
-            Log.e("Makepad", "copyContentUri failed for " + uri + ": " + e);
-            return false;
-        }
-    }
-
     private String getApplicationName() {
         ApplicationInfo applicationInfo = getApplicationContext().getApplicationInfo();
         CharSequence appName = applicationInfo.loadLabel(getPackageManager());
@@ -2906,21 +2685,11 @@ public class MakepadActivity
         }
     }
 
-    // location (Cx::start_location_updates). Static, so a recreated activity can still stop it.
-    private static LocationManager mLocationManager;
-    private static LocationListener mLocationListener;
+    // location (Cx::start_location_updates)
+    private LocationManager mLocationManager;
+    private LocationListener mLocationListener;
 
-    private static class MakepadLocationListener implements LocationListener {
-        @Override
-        public void onLocationChanged(Location loc) {
-            sendLocationUpdate(loc);
-        }
-        @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
-        @Override public void onProviderEnabled(String provider) {}
-        @Override public void onProviderDisabled(String provider) {}
-    }
-
-    private static void sendLocationUpdate(Location loc) {
+    private void sendLocationUpdate(Location loc) {
         MakepadNative.onLocationUpdate(
             loc.getLongitude(), loc.getLatitude(), loc.getAccuracy(),
             loc.hasAltitude(), loc.getAltitude(),
@@ -2935,12 +2704,20 @@ public class MakepadActivity
                 return; // already running
             }
             try {
-                mLocationManager = (LocationManager) getApplicationContext().getSystemService(Context.LOCATION_SERVICE);
+                mLocationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
                 if (mLocationManager == null) {
                     MakepadNative.onLocationError(2, "no location service");
                     return;
                 }
-                LocationListener listener = new MakepadLocationListener();
+                LocationListener listener = new LocationListener() {
+                    @Override
+                    public void onLocationChanged(Location loc) {
+                        sendLocationUpdate(loc);
+                    }
+                    @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
+                    @Override public void onProviderEnabled(String provider) {}
+                    @Override public void onProviderDisabled(String provider) {}
+                };
                 boolean any = false;
                 if (mLocationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                     mLocationManager.requestLocationUpdates(
@@ -3195,10 +2972,6 @@ public class MakepadActivity
     }
 
     public void prepareVideoPlayback(long videoId, Object source, int externalTextureHandle, boolean autoplay, boolean shouldLoop) {
-        // A destroyed activity has already shut its video thread down.
-        if (mVideoPlaybackHandler == null) {
-            return;
-        }
         VideoPlayer VideoPlayer = new VideoPlayer(this, videoId);
         VideoPlayer.setSource(source);
         VideoPlayer.setExternalTextureHandle(externalTextureHandle);
@@ -3288,6 +3061,21 @@ public class MakepadActivity
             || Build.PRODUCT == "sdk"
             || Build.PRODUCT == "google_sdk"
             || (Build.BRAND.startsWith("generic") && Build.DEVICE.startsWith("generic"));
+    }
+
+    private String getKernelVersion() {
+        try {
+            Process process = Runtime.getRuntime().exec("uname -r");
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            StringBuilder stringBuilder = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                stringBuilder.append(line);
+            }
+            return stringBuilder.toString();
+        } catch (IOException e) {
+            return "Unknown";
+        }
     }
     
     

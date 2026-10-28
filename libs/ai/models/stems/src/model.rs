@@ -29,7 +29,7 @@ pub const CB_MAX_OPS: usize = 32;
 /// it never becomes the binding constraint by accident.
 pub const CB_MAX_BYTES: usize = 8 << 30;
 
-pub(crate) fn command_buffer_ops_limit() -> Option<usize> {
+fn command_buffer_ops_limit() -> Option<usize> {
     parse_cb_ops(std::env::var("MAKEPAD_STEMS_CB_OPS").ok().as_deref())
 }
 
@@ -50,7 +50,7 @@ fn parse_cb_ops(value: Option<&str>) -> Option<usize> {
 /// Worker threads for the per-(stem, channel) inverse STFT. Eight independent
 /// transforms exist per chunk; the default deliberately leaves cores for a
 /// host app's UI and audio threads rather than taking every core for ~100 ms.
-pub(crate) fn istft_threads() -> usize {
+fn istft_threads() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -120,14 +120,7 @@ pub fn empty_stem_set(frames: usize) -> StemSet {
 
 /// A loaded, compiled separator. Not `Sync`; keep it on one worker thread (the
 /// device runtime and its buffers are thread-affine).
-///
-/// Compiled for one [`ChunkGeometry`]: the graph, its planned activations and
-/// the transform buffers are all sized to it, and
-/// [`separate_chunk`](Self::separate_chunk) takes exactly that many samples.
-/// Two models of the same checkpoint at different geometries share nothing
-/// but the file.
 pub struct StemsModel {
-    geometry: ChunkGeometry,
     weights: StemsWeights,
     graph: StemsGraph,
     session: DeviceGraphSession,
@@ -143,19 +136,8 @@ impl StemsModel {
     /// runtime. Expensive (seconds): do it once, off any latency-sensitive
     /// thread.
     pub fn load(checkpoint: impl AsRef<Path>) -> Result<Self> {
-        Self::load_with_geometry(checkpoint, ChunkGeometry::FULL)
-    }
-
-    /// As [`load`](Self::load), compiled for `geometry` instead of the full
-    /// chunk. The weights are the same; the graph and its activation plan
-    /// are sized to the shorter chunk, so a bridge model costs a fraction of
-    /// the full one's device memory beyond the weights themselves.
-    pub fn load_with_geometry(
-        checkpoint: impl AsRef<Path>,
-        geometry: ChunkGeometry,
-    ) -> Result<Self> {
         let runtime = DeviceRuntime::new()?;
-        Self::build(checkpoint, runtime, geometry)
+        Self::load_with_runtime(checkpoint, runtime)
     }
 
     /// NOTE: on Metal this configures `runtime`'s command-buffer budget for
@@ -164,14 +146,6 @@ impl StemsModel {
     /// affected. CUDA has no equivalent knob — its dispatches are already
     /// individually preemptible — so the budget is simply not applied there.
     pub fn load_with_runtime(checkpoint: impl AsRef<Path>, runtime: DeviceRuntime) -> Result<Self> {
-        Self::build(checkpoint, runtime, ChunkGeometry::FULL)
-    }
-
-    fn build(
-        checkpoint: impl AsRef<Path>,
-        runtime: DeviceRuntime,
-        geometry: ChunkGeometry,
-    ) -> Result<Self> {
         if let DeviceRuntime::Metal(metal) = &runtime {
             if let Some(ops) = command_buffer_ops_limit() {
                 metal.set_command_buffer_limits(ops, CB_MAX_BYTES);
@@ -189,7 +163,7 @@ impl StemsModel {
         };
         let mut weights =
             StemsWeights::load_with_options(checkpoint, DEFAULT_GRAPH_EXTRA_BYTES, f16)?;
-        let graph = build_graph(&mut weights, geometry.frames)?;
+        let graph = build_graph(&mut weights)?;
         let session = runtime.compile_graph(
             &weights.ctx,
             &graph.graph,
@@ -197,17 +171,15 @@ impl StemsModel {
             BufferStorageMode::Shared,
             BufferStorageMode::Shared,
         )?;
-        let frames = geometry.frames;
         Ok(Self {
-            geometry,
             weights,
             graph,
             session,
             stft: Stft::bs_roformer(),
-            features: vec![0.0; FEATURES * frames],
+            features: vec![0.0; FEATURES * CHUNK_FRAMES],
             spectrum: [
-                vec![0.0; FREQ_BINS * frames * 2],
-                vec![0.0; FREQ_BINS * frames * 2],
+                vec![0.0; FREQ_BINS * CHUNK_FRAMES * 2],
+                vec![0.0; FREQ_BINS * CHUNK_FRAMES * 2],
             ],
             istft_threads: istft_threads(),
         })
@@ -217,21 +189,14 @@ impl StemsModel {
         &self.weights.path
     }
 
-    /// The chunk this model was compiled for.
-    pub fn geometry(&self) -> ChunkGeometry {
-        self.geometry
-    }
-
-    /// Separates exactly one chunk of [`geometry`](Self::geometry) samples.
+    /// Separates exactly one `CHUNK_SAMPLES`-long stereo chunk.
     ///
-    /// `chunk` must already be padded to that length — the caller owns the
-    /// reference's reflect/constant padding rules (see `demix.rs`).
+    /// `chunk` must already be padded to `CHUNK_SAMPLES` frames — the caller
+    /// owns the reference's reflect/constant padding rules (see `demix.rs`).
     pub fn separate_chunk(&mut self, chunk: &StereoBuf) -> Result<StemSet> {
-        let samples = self.geometry.samples;
-        let frames = self.geometry.frames;
-        if chunk.left.len() != samples || chunk.right.len() != samples {
+        if chunk.left.len() != CHUNK_SAMPLES || chunk.right.len() != CHUNK_SAMPLES {
             return Err(DiffusionError::model(format!(
-                "stems: chunk must be {samples} frames per channel, got {}/{}",
+                "stems: chunk must be {CHUNK_SAMPLES} frames per channel, got {}/{}",
                 chunk.left.len(),
                 chunk.right.len()
             )));
@@ -239,15 +204,15 @@ impl StemsModel {
 
         // -- STFT both channels into the graph's feature layout --
         for ch in 0..AUDIO_CHANNELS {
-            let (spec, got) = self.stft.forward(chunk.channel(ch));
-            if got != frames {
+            let (spec, frames) = self.stft.forward(chunk.channel(ch));
+            if frames != CHUNK_FRAMES {
                 return Err(DiffusionError::model(format!(
-                    "stems: stft produced {got} frames, expected {frames}"
+                    "stems: stft produced {frames} frames, expected {CHUNK_FRAMES}"
                 )));
             }
             self.spectrum[ch].copy_from_slice(&spec);
         }
-        pack_features(&self.spectrum, &mut self.features, frames);
+        pack_features(&self.spectrum, &mut self.features);
         // -- forward --
         let outputs: Vec<TensorId> = self.graph.masks.to_vec();
         let execution = self.session.execute(
@@ -267,11 +232,11 @@ impl StemsModel {
                 DiffusionError::model(format!("stems: graph returned no mask for stem {stem}"))
             })?;
             let mask = f32_from_bytes(bytes)?;
-            if mask.len() != FEATURES * frames {
+            if mask.len() != FEATURES * CHUNK_FRAMES {
                 return Err(DiffusionError::model(format!(
                     "stems: mask {stem} has {} floats, expected {}",
                     mask.len(),
-                    FEATURES * frames
+                    FEATURES * CHUNK_FRAMES
                 )));
             }
             masks.push(mask);
@@ -290,12 +255,12 @@ impl StemsModel {
             let mut handles = Vec::with_capacity(threads);
             for group in tasks.chunks(per_thread) {
                 handles.push(scope.spawn(move || {
-                    let mut masked = vec![0.0f32; FREQ_BINS * frames * 2];
+                    let mut masked = vec![0.0f32; FREQ_BINS * CHUNK_FRAMES * 2];
                     group
                         .iter()
                         .map(|&(stem, ch)| {
-                            apply_mask(&spectrum[ch], masks[stem], ch, &mut masked, frames);
-                            (stem, ch, stft.inverse(&masked, frames, samples))
+                            apply_mask(&spectrum[ch], masks[stem], ch, &mut masked);
+                            (stem, ch, stft.inverse(&masked, CHUNK_FRAMES, CHUNK_SAMPLES))
                         })
                         .collect::<Vec<_>>()
                 }));
@@ -325,20 +290,15 @@ pub fn feature_index(bin: usize, channel: usize, re_im: usize) -> usize {
     (bin * AUDIO_CHANNELS + channel) * 2 + re_im
 }
 
-/// Interleaves the two channels' spectra into the graph's `[4100, frames]`
-/// input.
-pub(crate) fn pack_features(
-    spectrum: &[Vec<f32>; AUDIO_CHANNELS],
-    out: &mut [f32],
-    frames: usize,
-) {
+/// Interleaves the two channels' spectra into the graph's `[4100, 1101]` input.
+fn pack_features(spectrum: &[Vec<f32>; AUDIO_CHANNELS], out: &mut [f32]) {
     for bin in 0..FREQ_BINS {
         for ch in 0..AUDIO_CHANNELS {
             let src = &spectrum[ch];
-            let base = bin * frames * 2;
+            let base = bin * CHUNK_FRAMES * 2;
             let re_at = feature_index(bin, ch, 0);
             let im_at = feature_index(bin, ch, 1);
-            for frame in 0..frames {
+            for frame in 0..CHUNK_FRAMES {
                 let s = base + frame * 2;
                 let d = frame * FEATURES;
                 out[d + re_at] = src[s];
@@ -349,18 +309,12 @@ pub(crate) fn pack_features(
 }
 
 /// Complex product of one channel's spectrum with the stem's ratio mask.
-pub(crate) fn apply_mask(
-    spectrum: &[f32],
-    mask: &[f32],
-    channel: usize,
-    out: &mut [f32],
-    frames: usize,
-) {
+fn apply_mask(spectrum: &[f32], mask: &[f32], channel: usize, out: &mut [f32]) {
     for bin in 0..FREQ_BINS {
         let re_at = feature_index(bin, channel, 0);
         let im_at = feature_index(bin, channel, 1);
-        let base = bin * frames * 2;
-        for frame in 0..frames {
+        let base = bin * CHUNK_FRAMES * 2;
+        for frame in 0..CHUNK_FRAMES {
             let s = base + frame * 2;
             let m = frame * FEATURES;
             let (ar, ai) = (spectrum[s], spectrum[s + 1]);
@@ -371,11 +325,11 @@ pub(crate) fn apply_mask(
     }
 }
 
-pub(crate) fn as_bytes(values: &[f32]) -> &[u8] {
+fn as_bytes(values: &[f32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
 }
 
-pub(crate) fn f32_from_bytes(bytes: &[u8]) -> Result<&[f32]> {
+fn f32_from_bytes(bytes: &[u8]) -> Result<&[f32]> {
     if bytes.len() % 4 != 0 {
         return Err(DiffusionError::model(format!(
             "stems: graph output has {} bytes, not a multiple of 4",
@@ -464,7 +418,7 @@ mod tests {
         }
         let mut out = vec![0.0f32; FREQ_BINS * CHUNK_FRAMES * 2];
         for ch in 0..AUDIO_CHANNELS {
-            apply_mask(&spectrum[ch], &mask, ch, &mut out, CHUNK_FRAMES);
+            apply_mask(&spectrum[ch], &mask, ch, &mut out);
             assert_eq!(out, spectrum[ch], "channel {ch}");
         }
     }
@@ -479,7 +433,7 @@ mod tests {
         mask[feature_index(0, 0, 0)] = 3.0;
         mask[feature_index(0, 0, 1)] = 4.0;
         let mut out = vec![0.0f32; FREQ_BINS * CHUNK_FRAMES * 2];
-        apply_mask(&spectrum, &mask, 0, &mut out, CHUNK_FRAMES);
+        apply_mask(&spectrum, &mask, 0, &mut out);
         assert_eq!(out[0], -5.0);
         assert_eq!(out[1], 10.0);
     }
@@ -494,7 +448,7 @@ mod tests {
         spectrum[0][3 * CHUNK_FRAMES * 2 + 5 * 2] = 7.0;
         spectrum[1][3 * CHUNK_FRAMES * 2 + 5 * 2 + 1] = -9.0;
         let mut features = vec![0.0f32; FEATURES * CHUNK_FRAMES];
-        pack_features(&spectrum, &mut features, CHUNK_FRAMES);
+        pack_features(&spectrum, &mut features);
         assert_eq!(features[5 * FEATURES + feature_index(3, 0, 0)], 7.0);
         assert_eq!(features[5 * FEATURES + feature_index(3, 1, 1)], -9.0);
         assert_eq!(

@@ -1,13 +1,19 @@
-use std::{
-    ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString},
-    io,
-    io::{Read, Write},
-    net::{Shutdown, TcpStream},
-    os::fd::AsRawFd,
-    ptr,
-    sync::OnceLock,
-    time::Duration,
-};
+use std::ffi::c_char;
+use std::ffi::c_int;
+use std::ffi::c_long;
+use std::ffi::c_ulong;
+use std::ffi::c_void;
+use std::ffi::CStr;
+use std::ffi::CString;
+use std::io;
+use std::io::Read;
+use std::io::Write;
+use std::net::Shutdown;
+use std::net::TcpStream;
+use std::os::fd::AsRawFd;
+use std::ptr;
+use std::sync::OnceLock;
+use crate::sols_browser_time::Duration;
 
 #[repr(C)]
 struct SSL_CTX {

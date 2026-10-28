@@ -31,6 +31,7 @@ use {
         fs::{remove_file, File},
         io::prelude::*,
         mem, ptr,
+        sync::Once,
     },
 };
 
@@ -131,6 +132,46 @@ impl DrawVars {
 
             output.assign_uniform_buffer_indices(&vm.bx.heap, 3);
 
+            #[cfg(use_vulkan)]
+            let mut compiled_vulkan_shader: [Option<CxVulkanShaderBinary>;
+                NUM_SHADER_VARIANTS] = std::array::from_fn(|_| None);
+
+            // Only while this process renders with Vulkan; a Vulkan-capable
+            // desktop Linux build that fell back to OpenGL ES compiles GLSL
+            // below instead. Android and Quest have no such fallback.
+            #[cfg(use_vulkan)]
+            if !cfg!(target_os = "linux") || vm.host.cx().os.vulkan_active() {
+                for (shader_variant, xr_multiview) in [false, true].into_iter().enumerate() {
+                    match crate::os::linux::vulkan_naga::compile_draw_shader_wgsl_to_spirv(
+                        vm,
+                        io_self,
+                        &output,
+                        xr_multiview,
+                    ) {
+                        Ok(vk_shader) => compiled_vulkan_shader[shader_variant] = Some(vk_shader),
+                        Err(err) => {
+                            use std::sync::atomic::{AtomicUsize, Ordering};
+                            static ERROR_COUNT: AtomicUsize = AtomicUsize::new(0);
+                            const MAX_ERROR_LOGS: usize = 2;
+                            let index = ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
+                            if index < MAX_ERROR_LOGS {
+                                let variant_name = if xr_multiview { "xr" } else { "window" };
+                                crate::error!(
+                                    "Vulkan WGSL/SPIR-V compilation failed for {} variant: {}",
+                                    variant_name,
+                                    err
+                                );
+                            } else if index == MAX_ERROR_LOGS {
+                                crate::warning!(
+                                    "Suppressing further Vulkan WGSL/SPIR-V compilation logs after {} errors",
+                                    MAX_ERROR_LOGS
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             if crate::makepad_error_log::trace_enabled("shader.glsl_ir") {
                 crate::trace!("shader.glsl_ir", "---- Linux GLSL IR io list ----");
                 for io in &output.io {
@@ -173,52 +214,6 @@ impl DrawVars {
                         .insert(fnhash, shader_id);
                     self.finalize_cached_shader(vm, shader_id);
                     return;
-                }
-            }
-
-            #[cfg(use_vulkan)]
-            let mut compiled_vulkan_shader: [Option<CxVulkanShaderBinary>;
-                NUM_SHADER_VARIANTS] = std::array::from_fn(|_| None);
-
-            // Only while this process renders with Vulkan; a Vulkan-capable
-            // desktop Linux build that fell back to OpenGL ES compiles GLSL
-            // above instead. Android and Quest have no such fallback.
-            #[cfg(use_vulkan)]
-            if !cfg!(target_os = "linux") || vm.host.cx().os.vulkan_active() {
-                for (shader_variant, xr_multiview) in [false, true].into_iter().enumerate() {
-                    // Only Android ever draws the XR variant.
-                    if xr_multiview && !cfg!(target_os = "android") {
-                        continue;
-                    }
-                    match crate::os::linux::vulkan_naga::compile_draw_shader_wgsl_to_spirv(
-                        vm,
-                        io_self,
-                        &output,
-                        xr_multiview,
-                    ) {
-                        Ok(vk_shader) => compiled_vulkan_shader[shader_variant] = Some(vk_shader),
-                        Err(err) => {
-                            use std::sync::atomic::{AtomicUsize, Ordering};
-                            static ERROR_COUNT: AtomicUsize = AtomicUsize::new(0);
-                            const MAX_ERROR_LOGS: usize = 2;
-                            let index = ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
-                            // Tracing the WGSL asks for every failure, not the first two.
-                            let tracing = crate::makepad_error_log::trace_enabled("shader.wgsl");
-                            if index < MAX_ERROR_LOGS || tracing {
-                                let variant_name = if xr_multiview { "xr" } else { "window" };
-                                crate::error!(
-                                    "Vulkan WGSL/SPIR-V compilation failed for {} variant: {}",
-                                    variant_name,
-                                    err
-                                );
-                            } else if index == MAX_ERROR_LOGS {
-                                crate::warning!(
-                                    "Suppressing further Vulkan WGSL/SPIR-V compilation logs after {} errors",
-                                    MAX_ERROR_LOGS
-                                );
-                            }
-                        }
-                    }
                 }
             }
 
@@ -407,50 +402,53 @@ impl Cx {
             self.publications.set_envelope(allowance / 4);
             crate::log!("retained-upload budgets: adapter_bytes={} process_allowance={} allocation_limit={} source={}", reported, self.memory_budget(), allowance / 4, if reported != 0 { "GL_NVX_gpu_memory_info" } else { "process_allowance_fallback" });
         }
-        if self.service_gl_instance_retirements() {
+        self.draw_lists.1.allocations.collect_for_frame(
+            self.repaint_id,
+            self.textures
+                .1
+                .serials
+                .completed
+                .load(std::sync::atomic::Ordering::Acquire),
+        );
+        self.draw_lists.1.allocations.collect_backlog(
+            self.repaint_id,
+            self.textures
+                .1
+                .serials
+                .completed
+                .load(std::sync::atomic::Ordering::Acquire),
+            8,
+        );
+        let pool = self.task_pool();
+        let gl = self.os.gl();
+        if self
+            .draw_lists
+            .retire_free_items(&pool, self.repaint_id, |os| {
+                if let Some(vao) = os.vao.take() {
+                    vao.free(gl);
+                }
+                os.inst_vb.free_resources(gl);
+                std::mem::take(&mut os.inst_vb)
+            })
+        {
             crate::trace!("gl.repaint", "retirements pending: {}", self.draw_lists.instance_retirement_terms());
-            // Without the lifetime fence there's no `maintain_instance_retirements`, so
-            // these builds keep asking for a repaint while retirement work is pending.
-            #[cfg(any(linux_direct, target_env = "ohos", all(use_vulkan, not(target_os = "linux"))))]
-            {
-                self.demo_time_repaint = true;
-                self.passes[pass].repaint_next = true;
-            }
+            self.demo_time_repaint = true;
         }
         self.render_view_inner(pass, list, zbias, step);
         let serial = self.textures.1.serials.submit();
         self.readback_pass_submitted(pass, serial);
-        // Complete the previous frame's fence and create one for this frame. Painting
-        // leaves no quiet beat for `maintain_instance_retirements`, so without this
-        // poll released instance allocations would pile up for as long as we paint.
+        // Complete the previous frame's fence and arm one for this frame. Without
+        // this poll on the paint path the completion serial never advanced, so
+        // released instance allocations (one per upload) were never collected:
+        // the retirement queue grew without bound and its "still pending" answer
+        // kept the window repainting at rest. (The direct and OpenHarmony
+        // renderers do not track texture lifetimes.)
         #[cfg(not(any(
             linux_direct,
             target_env = "ohos",
             all(use_vulkan, not(target_os = "linux"))
         )))]
         self.poll_texture_lifetimes_for(false);
-    }
-
-    /// Collects what the GPU is done with and hands freed draw items to the
-    /// workers, once per `repaint_id`. Returns whether work is still pending.
-    fn service_gl_instance_retirements(&mut self) -> bool {
-        let completed = self
-            .textures
-            .1
-            .serials
-            .completed
-            .load(std::sync::atomic::Ordering::Acquire);
-        self.draw_lists.1.allocations.collect_for_frame(self.repaint_id, completed);
-        self.draw_lists.1.allocations.collect_backlog(self.repaint_id, completed, 8);
-        let pool = self.task_pool();
-        let gl = self.os.gl();
-        self.draw_lists.retire_free_items(&pool, self.repaint_id, |os| {
-            if let Some(vao) = os.vao.take() {
-                vao.free(gl);
-            }
-            os.inst_vb.free_resources(gl);
-            std::mem::take(&mut os.inst_vb)
-        })
     }
 
     fn retained_adapter_bytes(&self) -> u64 {
@@ -593,7 +591,6 @@ impl Cx {
                 else {
                     crate::trace!("gl.repaint", "shader not ready");
                     self.demo_time_repaint = true;
-                    self.passes[draw_pass_id].repaint_next = true;
                     continue;
                 };
                 let trace_draw = crate::makepad_error_log::trace_enabled("gl.draw");
@@ -653,7 +650,7 @@ impl Cx {
                         // What this copy costs feeds the producers' pacing
                         // (contract §8): summed per frame, recorded at the
                         // pass's end.
-                        let copy_started = std::time::Instant::now();
+                        let copy_started = crate::sols_browser_time::Instant::now();
                         let uploaded = if let Some(retained) = &draw_item.retained_instances {
                             let Some(uploaded) =
                                 draw_item.os.inst_vb.update_retained_array(
@@ -666,7 +663,6 @@ impl Cx {
                                 crate::trace!("gl.repaint", "retained upload pending");
                                 draw_item.instance_upload_pending = true;
                                 self.demo_time_repaint = true;
-                                self.passes[draw_pass_id].repaint_next = true;
                                 upload_refused = true;
                                 break 'instance_upload;
                             };
@@ -727,7 +723,6 @@ impl Cx {
                 if sh.mapping.uses_time {
                     crate::trace!("gl.repaint", "shader uses time");
                     self.demo_time_repaint = true;
-                    self.passes[draw_pass_id].repaint_next = true;
                 }
 
                 if sh.mapping.flags.debug_draw {
@@ -976,11 +971,6 @@ impl Cx {
                     if draw_call.options.backface_culling {
                         (gl.glEnable)(gl_sys::CULL_FACE);
                         (gl.glCullFace)(gl_sys::BACK);
-                        (gl.glFrontFace)(if self.passes[draw_pass_id].os.projection_inverted {
-                            gl_sys::CW
-                        } else {
-                            gl_sys::CCW
-                        });
                     } else {
                         (gl.glDisable)(gl_sys::CULL_FACE);
                     }
@@ -1208,30 +1198,22 @@ impl Cx {
         let pass = &mut self.passes[draw_pass_id];
         if !pass.keep_camera_matrix {
             pass.set_ortho_matrix(pass_rect.pos, pass_rect.size, ortho_uniforms_gen);
+            if to_texture {
+                // OFFSCREEN passes render UPSIDE DOWN on GL: an FBO's rows
+                // are stored bottom-up, so inverting the projection's Y
+                // lands the texels in the same top-left order Metal/D3D
+                // produce. Every consumer then plain-samples — nobody
+                // flips a V coordinate in a pixel shader (the web backend
+                // has rendered offscreen this way all along; desktop GL
+                // used to compensate per-sample with sample_rt instead).
+                let m = &mut pass.pass_uniforms.camera_projection.v;
+                m[1] = -m[1];
+                m[5] = -m[5];
+                m[9] = -m[9];
+                m[13] = -m[13];
+            }
         }
         pass.set_dpi_factor(dpi_factor, dpi_uniforms_gen);
-        // OFFSCREEN passes render UPSIDE DOWN on GL: an FBO's rows are
-        // stored bottom-up, so inverting the projection's Y lands the
-        // texels in the same top-left order Metal, D3D and Vulkan
-        // produce (the platform's Y law). Every consumer then samples as
-        // stored; nobody flips a V coordinate in a pixel shader. The 2D
-        // camera is inverted in place (it is rebuilt every pass); a custom
-        // camera belongs to its owner, so an inverted copy is what goes to
-        // the GPU, as on the web. The inversion reverses winding, which
-        // the draw loop answers with a clockwise front face.
-        pass.os.projection_inverted = to_texture;
-        if to_texture {
-            if pass.keep_camera_matrix {
-                let mut inverted = pass.pass_uniforms.clone();
-                invert_projection_y(&mut inverted.camera_projection);
-                invert_projection_y(&mut inverted.camera_projection_r);
-                pass.os
-                    .pass_uniforms
-                    .update_uniform_buffer(self.os.gl(), inverted.as_slice());
-                return Some((pass_rect.size, dpi_factor));
-            }
-            invert_projection_y(&mut pass.pass_uniforms.camera_projection);
-        }
 
         pass.os
             .pass_uniforms
@@ -1252,10 +1234,11 @@ impl Cx {
         } else {
             return;
         };
-        // Every texture pass renders through the inverted projection above,
-        // so its color targets hold TOP-LEFT rows and a readback must not
-        // row-swap them.
-        let rows_top_left = true;
+        // Whether this pass rendered with the inverted projection above:
+        // its color targets then hold TOP-LEFT rows (readback must not
+        // row-swap them). Custom-camera passes (XR, 3D) keep their own
+        // matrices and the classic GL bottom-up storage.
+        let rows_top_left = !self.passes[draw_pass_id].keep_camera_matrix;
 
         let mut clear_color = Vec4f::default();
         let mut clear_depth = 1.0;
@@ -1391,13 +1374,21 @@ impl Cx {
         //while unsafe { (gl.glGetError)() } != 0 {}
 
         unsafe {
-            // The viewport starts at the target's first row: with the
-            // inverted projection the pass's top row is texel row 0, where
-            // Metal, D3D and Vulkan put it, also in a target allocated
-            // taller than the pass.
-            let (x, y) = (0, 0);
+            let (x, mut y) = (0, 0);
             let width = (pass_size.x * dpi_factor) as u32;
             let height = (pass_size.y * dpi_factor) as u32;
+
+            // HACK(eddyb) to try and match DirectX and Metal conventions, we
+            // need the viewport to be placed on the other end of the Y axis.
+            if let [color_texture] = color_textures {
+                let cxtexture = &mut self.textures[color_texture.texture.texture_id()];
+                if cxtexture.os.gl_texture.is_some() {
+                    let alloc_height = cxtexture.alloc.as_ref().unwrap().height as u32;
+                    if alloc_height > height {
+                        y = alloc_height - height;
+                    }
+                }
+            }
 
             (gl.glViewport)(x as i32, y as i32, width as i32, height as i32);
 
@@ -1706,53 +1697,21 @@ impl GlShader {
     }
 
     fn supports_parallel_compile(gl: &LibGl) -> bool {
-        *gl.parallel_compile.get_or_init(|| {
-            let supported = get_gl_string(gl, gl_sys::EXTENSIONS)
-                .split_whitespace()
-                .any(|ext| {
-                    ext == "GL_KHR_parallel_shader_compile"
-                        || ext == "GL_ARB_parallel_shader_compile"
-                });
-            if supported {
+        let supported = get_gl_string(gl, gl_sys::EXTENSIONS)
+            .split_whitespace()
+            .any(|ext| {
+                ext == "GL_KHR_parallel_shader_compile" || ext == "GL_ARB_parallel_shader_compile"
+            });
+        if supported {
+            static CONFIGURE_PARALLEL_COMPILE: Once = Once::new();
+            CONFIGURE_PARALLEL_COMPILE.call_once(|| unsafe {
                 if let Some(set_threads) = gl.glMaxShaderCompilerThreadsKHR {
                     // Ask the driver to use as many background compiler threads as it supports.
-                    unsafe { set_threads(u32::MAX) };
+                    set_threads(u32::MAX);
                 }
-            }
-            supported
-        })
-    }
-
-    #[cfg(not(ohos_sim))]
-    fn program_cache_path(
-        gl: &LibGl,
-        cache_dir: &str,
-        vertex: &str,
-        pixel: &str,
-        os_type: &OsType,
-    ) -> String {
-        use std::hash::BuildHasher;
-        // `FixedState` has a fixed seed, so the same build always picks the same file.
-        let key_hasher = foldhash::fast::FixedState::default();
-        let shader_hash = key_hasher.hash_one((vertex, pixel));
-        let OsType::Android(params) = os_type else {
-            return format!("{}/shader_{:08x}.bin", cache_dir, shader_hash);
-        };
-        // Android keys on the OS build and GL driver too, so an update doesn't load stale binaries.
-        let suffix = gl.android_cache_suffix.get_or_init(|| {
-            let driver_hash = live_id!(gl_driver)
-                .str_append(&get_gl_string(gl, gl_sys::VENDOR))
-                .str_append(&get_gl_string(gl, gl_sys::RENDERER))
-                .str_append(&get_gl_string(gl, gl_sys::VERSION));
-            // Changes whenever the key hasher does, so `write_program_cache` also deletes
-            // the binaries an older key left behind.
-            let key_marker = key_hasher.hash_one("shader");
-            format!(
-                "_av{}_bn{}_gl{:08x}_k{:08x}.bin",
-                params.android_version, params.build_number, driver_hash.0, key_marker
-            )
-        });
-        format!("{}/shader_{:08x}{}", cache_dir, shader_hash, suffix)
+            });
+        }
+        supported
     }
 
     #[cfg(ohos_sim)]
@@ -1768,7 +1727,20 @@ impl GlShader {
     #[cfg(not(ohos_sim))]
     fn read_program_cache(gl: &LibGl, vertex: &str, pixel: &str, os_type: &OsType) -> Option<u32> {
         if let Some(cache_dir) = os_type.get_cache_dir() {
-            let filename = Self::program_cache_path(gl, &cache_dir, vertex, pixel, os_type);
+            let shader_hash = live_id!(shader).str_append(&vertex).str_append(&pixel);
+            let mut base_filename = format!("{}/shader_{:08x}", cache_dir, shader_hash.0);
+
+            if let OsType::Android(params) = os_type {
+                base_filename = format!(
+                    "{}_av{}_bn{}_kv{}",
+                    base_filename,
+                    params.android_version,
+                    params.build_number,
+                    params.kernel_version
+                );
+            }
+
+            let filename = format!("{}.bin", base_filename);
 
             if let Ok(mut cache_file) = File::open(&filename) {
                 let mut binary = Vec::new();
@@ -1777,35 +1749,53 @@ impl GlShader {
                     Ok(_bytes_read) => {
                         let binary_format = u32::from_be_bytes(format_bytes);
                         match cache_file.read_to_end(&mut binary) {
-                            Ok(_full_bytes) => unsafe {
-                                let program = (gl.glCreateProgram)();
-                                (gl.glProgramBinary)(
-                                    program,
-                                    binary_format,
-                                    binary.as_ptr() as *const _,
-                                    binary.len() as i32,
-                                );
-                                if let Some(error) = GlShader::opengl_has_shader_error(
-                                    gl,
-                                    false,
-                                    program as usize,
-                                    "",
-                                ) {
-                                    // A cached program binary that no longer loads is
-                                    // expected and recoverable (e.g. after a GPU driver
-                                    // update changes the binary format). The caller falls
-                                    // back to compiling from source and overwrites this
-                                    // stale entry, so warn rather than error.
-                                    crate::warning!(
-                                        "Ignoring stale shader cache entry (will recompile): SHADER::CACHE::PROGRAM_BINARY_FAILED\n{}",
-                                        error
+                            Ok(_full_bytes) => {
+                                let mut version_consistency_conflict = false;
+                                if let OsType::Android(params) = os_type {
+                                    let current_filename = format!(
+                                        "{}/shader_{:08x}_av{}_bn{}_kv{}.bin",
+                                        cache_dir,
+                                        shader_hash.0,
+                                        params.android_version,
+                                        params.build_number,
+                                        params.kernel_version
                                     );
-                                    (gl.glDeleteProgram)(program);
-                                    let _ = remove_file(&filename);
-                                    return None;
+                                    version_consistency_conflict = filename != current_filename;
                                 }
-                                return Some(program);
-                            },
+
+                                if !version_consistency_conflict {
+                                    unsafe {
+                                        let program = (gl.glCreateProgram)();
+                                        (gl.glProgramBinary)(
+                                            program,
+                                            binary_format,
+                                            binary.as_ptr() as *const _,
+                                            binary.len() as i32,
+                                        );
+                                        if let Some(error) = GlShader::opengl_has_shader_error(
+                                            gl,
+                                            false,
+                                            program as usize,
+                                            "",
+                                        ) {
+                                            // A cached program binary that no longer loads is
+                                            // expected and recoverable (e.g. after a GPU driver
+                                            // update changes the binary format). The caller falls
+                                            // back to compiling from source and overwrites this
+                                            // stale entry, so warn rather than error.
+                                            crate::warning!(
+                                                "Ignoring stale shader cache entry (will recompile): SHADER::CACHE::PROGRAM_BINARY_FAILED\n{}",
+                                                error
+                                            );
+                                            (gl.glDeleteProgram)(program);
+                                            return None;
+                                        }
+                                        return Some(program);
+                                    }
+                                } else {
+                                    let _ = remove_file(&filename);
+                                }
+                            }
                             Err(e) => {
                                 crate::warning!(
                                     "Failed to read the full shader cache file {filename}, error: {e}"
@@ -1830,18 +1820,30 @@ impl GlShader {
         pixel: &str,
         _os_type: &OsType,
     ) -> PendingGlShader {
+        static GL_INFO_ONCE: std::sync::Once = std::sync::Once::new();
+        GL_INFO_ONCE.call_once(|| {
+            crate::log!(
+                "Makepad GL: vendor={:?} renderer={:?} version={:?} glsl={:?} sampler_objects={}",
+                get_gl_string(gl, gl_sys::VENDOR),
+                get_gl_string(gl, gl_sys::RENDERER),
+                get_gl_string(gl, gl_sys::VERSION),
+                get_gl_string(gl, gl_sys::SHADING_LANGUAGE_VERSION),
+                gl.glGenSamplers.is_some()
+                    && gl.glBindSampler.is_some()
+                    && gl.glSamplerParameteri.is_some(),
+            );
+        });
+
         let vertex_len = Self::shader_source_len(vertex);
         let pixel_len = Self::shader_source_len(pixel);
+        #[cfg(target_os = "android")]
+        let vertex_hash = Self::shader_source_hash(vertex);
+        #[cfg(target_os = "android")]
+        let pixel_hash = Self::shader_source_hash(pixel);
 
         #[cfg(target_os = "android")]
         let log_shader_builds = matches!(_os_type, OsType::Android(_))
             && crate::makepad_error_log::trace_enabled("gl.shader_builds");
-        #[cfg(target_os = "android")]
-        let (vertex_hash, pixel_hash) = if log_shader_builds {
-            (Self::shader_source_hash(vertex), Self::shader_source_hash(pixel))
-        } else {
-            Default::default()
-        };
 
         #[cfg(target_os = "android")]
         if log_shader_builds {
@@ -1943,8 +1945,21 @@ impl GlShader {
                         binary.as_mut_ptr() as *mut _,
                     );
                     if return_size != 0 {
-                        let filename =
-                            Self::program_cache_path(gl, &cache_dir, vertex, pixel, os_type);
+                        let shader_hash = live_id!(shader).str_append(&vertex).str_append(&pixel);
+                        let mut filename = format!("{}/shader_{:08x}", cache_dir, shader_hash.0);
+
+                        if let OsType::Android(params) = os_type {
+                            filename = format!(
+                                "{}_av{}_bn{}_kv{}",
+                                filename,
+                                params.android_version,
+                                params.build_number,
+                                params.kernel_version
+                            );
+                        }
+
+                        filename = format!("{}.bin", filename);
+
                         binary.resize(return_size as usize, 0u8);
                         match File::create(&filename) {
                             Ok(mut cache) => {
@@ -1961,25 +1976,6 @@ impl GlShader {
                                     "Failed to write shader cache to {filename}, error: {e}"
                                 );
                             }
-                        }
-                        // On Android, the first write in a context deletes the binaries an
-                        // older OS build, GL driver or key hasher left behind.
-                        if let Some(suffix) = gl.android_cache_suffix.get() {
-                            gl.stale_cache_sweep.call_once(|| {
-                                let Ok(entries) = std::fs::read_dir(&cache_dir) else {
-                                    return;
-                                };
-                                for entry in entries.flatten() {
-                                    let name = entry.file_name();
-                                    let name = name.to_string_lossy();
-                                    if name.starts_with("shader_")
-                                        && name.ends_with(".bin")
-                                        && !name.ends_with(suffix.as_str())
-                                    {
-                                        let _ = remove_file(entry.path());
-                                    }
-                                }
-                            });
                         }
                     }
                 }
@@ -2086,34 +2082,29 @@ impl GlShader {
         mapping: &CxDrawShaderMapping,
         os_type: &OsType,
     ) -> GlShaderState {
-        static GL_INFO_ONCE: std::sync::Once = std::sync::Once::new();
-        GL_INFO_ONCE.call_once(|| {
-            crate::system_info::note_gpu_adapter(&get_gl_string(gl, gl_sys::RENDERER));
-            crate::log!(
-                "Makepad GL: vendor={:?} renderer={:?} version={:?} glsl={:?} sampler_objects={}",
-                get_gl_string(gl, gl_sys::VENDOR),
-                get_gl_string(gl, gl_sys::RENDERER),
-                get_gl_string(gl, gl_sys::VERSION),
-                get_gl_string(gl, gl_sys::SHADING_LANGUAGE_VERSION),
-                gl.glGenSamplers.is_some()
-                    && gl.glBindSampler.is_some()
-                    && gl.glSamplerParameteri.is_some(),
-            );
-        });
-
-        if let Some(program) = Self::read_program_cache(gl, vertex, pixel, os_type) {
-            return GlShaderState::Ready(Self::build_from_program(gl, program, mapping));
-        }
-
         if Self::supports_parallel_compile(gl) {
             return GlShaderState::Pending(Self::start_pending_program_compile(
                 gl, vertex, pixel, os_type,
             ));
         }
 
+        GlShaderState::Ready(Self::new(gl, vertex, pixel, mapping, os_type))
+    }
+
+    pub fn new(
+        gl: &LibGl,
+        vertex: &str,
+        pixel: &str,
+        mapping: &CxDrawShaderMapping,
+        os_type: &OsType,
+    ) -> Self {
+        if let Some(program) = Self::read_program_cache(gl, vertex, pixel, os_type) {
+            return Self::build_from_program(gl, program, mapping);
+        }
+
         let pending = Self::start_pending_program_compile(gl, vertex, pixel, os_type);
         let program = Self::finish_pending_program_compile(gl, pending, vertex, pixel, os_type);
-        GlShaderState::Ready(Self::build_from_program(gl, program, mapping))
+        Self::build_from_program(gl, program, mapping)
     }
 
     pub fn set_uniform_array(gl: &LibGl, loc: &OpenglUniform, array: &[f32]) {
@@ -2501,13 +2492,11 @@ impl CxOsDrawShader {
         // rely on that query alone. VideoExternal shaders always declare samplerExternalOES;
         // without `#extension GL_OES_EGL_image_external_essl3` they panic on Adreno ES 3.2.
         // Real Android devices expose OES external textures for SurfaceTexture/MediaCodec.
-        let listed_external = *gl.oes_external_listed.get_or_init(|| {
-            get_gl_string(gl, gl_sys::EXTENSIONS)
-                .split_whitespace()
-                .any(|ext| {
-                    ext == "GL_OES_EGL_image_external" || ext == "GL_OES_EGL_image_external_essl3"
-                })
-        });
+        let listed_external = get_gl_string(gl, gl_sys::EXTENSIONS)
+            .split_whitespace()
+            .any(|ext| {
+                ext == "GL_OES_EGL_image_external" || ext == "GL_OES_EGL_image_external_essl3"
+            });
         let is_external_texture_supported = listed_external
             || matches!(os_type, OsType::Android(params) if !params.is_emulator)
             || matches!(os_type, OsType::LinuxWindow(_) | OsType::LinuxDirect);
@@ -3721,24 +3710,11 @@ impl CxTexture {
     }
 }
 
-/// Negates a projection's Y row: what a texture pass on GL renders through
-/// so its bottom-up target holds top-left rows (`setup_render_pass`).
-fn invert_projection_y(m: &mut crate::makepad_math::Mat4f) {
-    m.v[1] = -m.v[1];
-    m.v[5] = -m.v[5];
-    m.v[9] = -m.v[9];
-    m.v[13] = -m.v[13];
-}
-
 #[derive(Default, Clone)]
 pub struct CxOsPass {
     pub shader_variant: usize,
     pub pass_uniforms: OpenglBuffer,
     pub gl_framebuffer: Option<u32>,
-    /// This pass renders into a texture through a projection whose Y is
-    /// inverted (see `setup_render_pass`), which also reverses triangle
-    /// winding: its draws cull with a clockwise front face.
-    pub projection_inverted: bool,
 }
 
 impl CxOsPass {
@@ -4616,78 +4592,29 @@ impl Cx {
         self.poll_texture_lifetimes_for(true);
     }
 
-    /// Does a render's retirement work on a beat where nothing rendered, so it
-    /// finishes at rest without repainting the window.
-    pub(crate) fn maintain_instance_retirements(&mut self) {
-        #[cfg(target_os = "linux")]
-        if self.os.vulkan_active() {
-            return;
-        }
-        if !self.draw_lists.has_pending_instance_retirements()
-            && self.publications.accounting().pending_retirement == 0
-            && self.textures.1.retired.is_empty()
-        {
-            return;
-        }
-        // An EGL without surfaceless contexts fails this bind, so we let the poll's
-        // own check decide whether our context is current.
-        #[cfg(target_os = "linux")]
-        if let Some(opengl_cx) = self.os.opengl_cx.as_ref() {
-            opengl_cx.make_current();
-        }
-        #[cfg(target_os = "android")]
-        if !self.os.has_drawable_surface()
-            || !self.os.display.as_ref().is_some_and(|display| display.try_make_current())
-        {
-            return;
-        }
-        if !self.poll_texture_lifetimes_for(true) {
-            // We couldn't poll, so a repaint does this work instead.
-            self.repaint_windows();
-            self.demo_time_repaint = true;
-            return;
-        }
-        // Each retirement step runs once per repaint_id, so this beat needs its own.
-        self.repaint_id += 1;
-        self.service_gl_instance_retirements();
-        // No swap follows, so flush the step's deletes ourselves.
-        unsafe {
-            (self.os.gl().glFlush)();
-        }
-        crate::trace!(
-            "gl.repaint",
-            "retirement beat: [{}] records={}",
-            self.draw_lists.instance_retirement_terms(),
-            self.draw_lists.1.allocations.record_count()
-        );
-    }
-
     /// `waiting` is false on the paint path, which polls once per frame and
     /// only arms a fence (and pays for the flush behind it) while something it
-    /// can see is waiting on the completion serial. Returns false if it couldn't poll.
-    fn poll_texture_lifetimes_for(&mut self, waiting: bool) -> bool {
+    /// can see is waiting on the completion serial.
+    fn poll_texture_lifetimes_for(&mut self, waiting: bool) {
         // Vulkan retires its resources on its own frame path.
         #[cfg(target_os = "linux")]
         if self.os.vulkan_active() {
-            return false;
+            return;
         }
         // The adapter draws attached blocks here (no per-publication
         // backing): dropped blocks release from this poll, contract §3.3.
         self.publications.retire_without_backing();
         #[cfg(target_os = "linux")]
         let Some(display) = self.os.opengl_cx.as_ref() else {
-            return false;
+            return;
         };
         #[cfg(target_os = "android")]
         let Some(display) = self.os.display.as_ref() else {
-            return false;
+            return;
         };
         let Some(get_proc) = display.libegl.eglGetProcAddress else {
-            return false;
+            return;
         };
-        // An explicit poll may have no swap coming to flush our fence, and glFlush
-        // alone isn't guaranteed to, so the check itself flushes it.
-        let wait_flags = if waiting { 0x1 } else { 0 }; // SYNC_FLUSH_COMMANDS_BIT
         // Waiters the paint path can see: released retained-instance
         // allocations awaiting collection, shared blocks awaiting retirement,
         // and (checked below) retired textures.
@@ -4702,7 +4629,7 @@ impl Cx {
                 let delete = get_proc(c"glDeleteSync".as_ptr());
                 let current = get_proc(c"eglGetCurrentContext".as_ptr());
                 if create.is_null() || poll.is_null() || delete.is_null() || current.is_null() {
-                    return false;
+                    return;
                 }
                 state.gl.functions = Some(TextureFenceFunctions {
                     create: std::mem::transmute::<
@@ -4728,7 +4655,7 @@ impl Cx {
         unsafe {
             if (functions.current)() != display.egl_context {
                 crate::trace!("gl.repaint", "lifetime poll: context not current");
-                return false;
+                return;
             }
             crate::trace!(
                 "gl.repaint",
@@ -4741,7 +4668,7 @@ impl Cx {
                 (display.libgl.glDeleteFramebuffers)(1, &framebuffer);
             }
             if let Some((serial, fence)) = state.gl.pending {
-                if matches!((functions.poll)(fence, wait_flags, 0), 0x911a | 0x911c) {
+                if matches!((functions.poll)(fence, 0, 0), 0x911a | 0x911c) {
                     (functions.delete)(fence);
                     state.gl.pending = None;
                     state.serials.complete(serial);
@@ -4773,6 +4700,5 @@ impl Cx {
                 false
             });
         }
-        true
     }
 }

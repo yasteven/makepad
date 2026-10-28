@@ -136,10 +136,8 @@ fn map_metal_gpu_times_to_app_timeline(
 // Uses global IOSurface IDs which work across processes without needing Mach port transfer
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
 use crate::os::apple::apple_sys::{
-    CFRelease, IOSurfaceID, IOSurfaceLookup, IOSurfaceRef,
+    CFRelease, IOSurfaceCreate, IOSurfaceGetID, IOSurfaceID, IOSurfaceLookup, IOSurfaceRef,
 };
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-use crate::os::apple::apple_sys::{IOSurfaceCreate, IOSurfaceGetID};
 
 impl Cx {
     fn total_drawcall_log_enabled() -> bool {
@@ -571,7 +569,6 @@ impl Cx {
             } else {
                 let (draw_list, _) =
                     self.draw_lists.list_and_upload_budget(draw_list_id);
-                let list_debug_id = draw_list.debug_id;
                 let draw_item = draw_list.draw_items.binding_mut(draw_item_id);
                 let backing_bytes = draw_item
                     .os
@@ -579,10 +576,6 @@ impl Cx {
                     .and_then(|id| metal_cx.backings.borrow().get(&id).map(|b| b.bytes));
                 if !draw_item.retained_presentable(backing_bytes.unwrap_or_else(|| draw_item.os.instance_buffer.inner.as_ref().map_or(0, |inner| inner.len))) {
                     self.passes[draw_pass_id].paint_dirty = true;
-                    // Not ready yet either: a frame without it is partial.
-                    self.pipeline_skips += 1;
-                        self.skip_reasons[0] += 1;
-                    self.pipeline_skip_repaint = Some(self.repaint_id);
                     continue;
                 }
                 let draw_call = if let Some(draw_call) = draw_item.kind.draw_call_mut() {
@@ -594,9 +587,6 @@ impl Cx {
                 let sh = &self.draw_shaders[draw_call.draw_shader_id.index];
                 if sh.os_shader_id.is_none() {
                     // shader didnt compile somehow
-                    self.pipeline_skips += 1;
-                        self.skip_reasons[1] += 1;
-                    self.pipeline_skip_repaint = Some(self.repaint_id);
                     continue;
                 }
                 let shp = &self.draw_shaders.os_shaders[sh.os_shader_id.unwrap()];
@@ -606,6 +596,10 @@ impl Cx {
                     if !seen.contains(&sh.debug_id) {
                         seen.push(sh.debug_id);
                     }
+                }
+
+                if sh.mapping.uses_time {
+                    self.demo_time_repaint = true;
                 }
 
                 if debug_dump {
@@ -652,11 +646,6 @@ impl Cx {
                     continue;
                 }
 
-                if sh.mapping.uses_time {
-                    self.demo_time_repaint = true;
-                    self.passes[draw_pass_id].repaint_next = true;
-                }
-
                 let encoder = encoders.group(draw_call.draw_shader_id.index, sh);
 
                 if self.passes[draw_pass_id].depth_texture.is_some() {
@@ -697,9 +686,6 @@ impl Cx {
                         // Keep this pass live while the driver compiles. No wait,
                         // no fallback synchronous compile on first use.
                         self.passes[draw_pass_id].paint_dirty = true;
-                        self.pipeline_skips += 1;
-                        self.skip_reasons[2] += 1;
-                        self.pipeline_skip_repaint = Some(self.repaint_id);
                         continue;
                     }
                 };
@@ -1057,15 +1043,6 @@ impl Cx {
                             continue;
                         }
                         let count = end - start;
-                        if crate::makepad_error_log::trace_enabled("gpu.shaders") {
-                            gpu_shader_tally(
-                                self.repaint_id,
-                                draw_call.draw_shader_id.index,
-                                list_debug_id,
-                                geometry.index_count as u64,
-                                count,
-                            );
-                        }
                         self.os.draw_calls_done += 1;
                         self.os.instances_done = self.os.instances_done.saturating_add(count);
                         self.os.vertices_done = self
@@ -1195,8 +1172,8 @@ impl Cx {
         }
         // PerfMonitor "draw" channel: CPU-side pass encode (all passes of a
         // frame sum), separate from the nextDrawable wait timed by the caller.
-        let perf_t0 = self.perf_monitor.enabled().then(std::time::Instant::now);
-        let perf_encode_t0 = std::time::Instant::now();
+        let perf_t0 = self.perf_monitor.enabled().then(crate::sols_browser_time::Instant::now);
+        let perf_encode_t0 = crate::sols_browser_time::Instant::now();
         self.os.bytes_written = 0;
         self.os.draw_calls_done = 0;
         self.os.instances_done = 0;
@@ -1692,21 +1669,7 @@ impl Cx {
             }
             DrawPassMode::Drawable(drawable, target_presentation_time) => {
                 let first_texture: ObjcId = unsafe { msg_send![drawable, texture] };
-                // A frame held back (whole frames only, one part not ready)
-                // is not the picture on screen: no grab or snapshot of it.
-                let withheld = (self.pipeline_skip_repaint == Some(self.repaint_id) || std::mem::take(&mut self.hold_next_paint))
-                    && crate::cx_api::CxOsApi::seconds_since_app_start(self) < self.whole_frames_until;
-                if !withheld {
-                    if let Some(began) = self.whole_hold_began.take() {
-                        crate::trace!(
-                            "switch",
-                            "whole frame presented {:.0} ms after the hold began ({} draws not ready so far)",
-                            (crate::cx_api::CxOsApi::seconds_since_app_start(self) - began) * 1000.0,
-                            self.pipeline_skips
-                        );
-                    }
-                }
-                let screenshot = if withheld { None } else { self.build_screenshot_struct(
+                let screenshot = self.build_screenshot_struct(
                     metal_cx,
                     command_buffer,
                     0,
@@ -1715,16 +1678,13 @@ impl Cx {
                     first_texture,
                     None,
                     pass_window_id,
-                ) };
+                );
                 // A repaint that stopped for a hole in any of its passes
                 // commits this window pass (queue order) but does not
                 // present it: the last whole frame stays up. The uniform
                 // starvation of THIS pass is caught here too — it is only
                 // known once its draw list is encoded.
-                // Asked for whole frames only (a change that should appear
-                // in one step): a frame missing a draw whose pipeline is
-                // still compiling is not shown either.
-                let present = if metal_cx.aborted_repaint == Some(self.repaint_id) || withheld {
+                let present = if metal_cx.aborted_repaint == Some(self.repaint_id) {
                     None
                 } else {
                     Some((drawable, target_presentation_time))
@@ -1750,19 +1710,7 @@ impl Cx {
             }
             DrawPassMode::Resizing(drawable) => {
                 let first_texture: ObjcId = unsafe { msg_send![drawable, texture] };
-                let withheld = (self.pipeline_skip_repaint == Some(self.repaint_id) || std::mem::take(&mut self.hold_next_paint))
-                    && crate::cx_api::CxOsApi::seconds_since_app_start(self) < self.whole_frames_until;
-                if !withheld {
-                    if let Some(began) = self.whole_hold_began.take() {
-                        crate::trace!(
-                            "switch",
-                            "whole frame presented {:.0} ms after the hold began ({} draws not ready so far)",
-                            (crate::cx_api::CxOsApi::seconds_since_app_start(self) - began) * 1000.0,
-                            self.pipeline_skips
-                        );
-                    }
-                }
-                let screenshot = if withheld { None } else { self.build_screenshot_struct(
+                let screenshot = self.build_screenshot_struct(
                     metal_cx,
                     command_buffer,
                     0,
@@ -1771,7 +1719,7 @@ impl Cx {
                     first_texture,
                     None,
                     pass_window_id,
-                ) };
+                );
                 self.commit_command_buffer(
                     metal_cx,
                     screenshot,
@@ -1781,7 +1729,7 @@ impl Cx {
                     gpu_counters,
                     gpu_profile_label.clone(),
                     command_buffer,
-                    (metal_cx.aborted_repaint != Some(self.repaint_id) && !withheld).then_some((drawable, None)),
+                    (metal_cx.aborted_repaint != Some(self.repaint_id)).then_some((drawable, None)),
                 );
             }
         }
@@ -1807,63 +1755,6 @@ impl Cx {
         painted
     }
 
-    /// The frame this window pass presents, copied for any pending
-    /// transition snapshots (`window_snapshot.rs`) in the same command
-    /// buffer: exactly the picture on screen, ready for later passes to
-    /// sample (one queue, so they run after the copy).
-    fn copy_window_snapshots(
-        &mut self,
-        metal_cx: &MetalCx,
-        command_buffer: ObjcId,
-        in_texture: ObjcId,
-        window_id: Option<usize>,
-    ) {
-        let Some(index) = window_id else { return };
-        if !self.window_snapshot_wanted(index) {
-            return;
-        }
-        // A repaint that is not presented is not the picture on screen: the
-        // request waits for the next whole one.
-        if metal_cx.aborted_repaint == Some(self.repaint_id) {
-            return;
-        }
-        let width: usize = unsafe { msg_send![in_texture, width] };
-        let height: usize = unsafe { msg_send![in_texture, height] };
-        let format: u64 = unsafe { msg_send![in_texture, pixelFormat] };
-        if width == 0 || height == 0 {
-            return;
-        }
-        for at in 0..self.window_snapshots.len() {
-            let request = &self.window_snapshots[at];
-            if request.window_id.0 != index || request.state != crate::window_snapshot::WindowSnapshotState::Pending {
-                continue;
-            }
-            let texture_id = request.texture.texture_id();
-            let descriptor = RcObjcId::from_owned(
-                NonNull::new(unsafe { msg_send![class!(MTLTextureDescriptor), new] }).unwrap(),
-            );
-            unsafe {
-                let () = msg_send![descriptor.as_id(), setTextureType: MTLTextureType::D2];
-                let () = msg_send![descriptor.as_id(), setDepth: 1u64];
-                let () = msg_send![descriptor.as_id(), setStorageMode: MTLStorageMode::Private];
-                let () = msg_send![descriptor.as_id(), setUsage: MTLTextureUsage::ShaderRead];
-                let () = msg_send![descriptor.as_id(), setWidth: width as u64];
-                let () = msg_send![descriptor.as_id(), setHeight: height as u64];
-                let () = msg_send![descriptor.as_id(), setPixelFormat: format];
-            }
-            let texture = RcObjcId::from_owned(
-                NonNull::new(unsafe { msg_send![metal_cx.device, newTextureWithDescriptor: descriptor.as_id()] }).unwrap(),
-            );
-            unsafe {
-                let blit_encoder: ObjcId = msg_send![command_buffer, blitCommandEncoder];
-                let () = msg_send![blit_encoder, copyFromTexture: in_texture toTexture: texture.as_id()];
-                let () = msg_send![blit_encoder, endEncoding];
-            }
-            self.textures[texture_id].os.texture = Some(texture);
-            self.window_snapshots[at].state = crate::window_snapshot::WindowSnapshotState::Captured;
-        }
-    }
-
     fn build_screenshot_struct(
         &mut self,
         metal_cx: &MetalCx,
@@ -1875,7 +1766,6 @@ impl Cx {
         _alloc: Option<TextureAlloc>,
         window_id: Option<usize>,
     ) -> Option<ScreenshotInfo> {
-        self.copy_window_snapshots(metal_cx, command_buffer, in_texture, window_id);
         let request_ids =
             self.take_studio_screenshot_request_ids_for_window(kind_id as u32, window_id);
         // A pending grab/probe request, or a screen-capture sink that is due a
@@ -2134,12 +2024,6 @@ impl Cx {
         metal_cx.submit_command_buffer(command_buffer, drawable);
     }
 
-    /// Shaders whose GPU pipelines are still being compiled (their draws
-    /// are left out of frames until then).
-    pub fn metal_pipelines_pending(&self) -> usize {
-        self.draw_shaders.os_shaders.iter().filter(|s| s.pipelines.solid.get().is_none() || s.pipelines.blend.get().is_none()).count()
-    }
-
     fn retry_metal_pipelines(&mut self, metal_cx: &MetalCx) {
         for shader in &mut self.draw_shaders.os_shaders {
             if !shader.compile_queued {
@@ -2159,7 +2043,7 @@ impl Cx {
         let _mp_batch = (
             crate::startup_trace_enabled(),
             self.draw_shaders.compile_set.len(),
-            std::time::Instant::now(),
+            crate::sols_browser_time::Instant::now(),
         );
         if _mp_batch.0 && _mp_batch.1 > 0 {
             crate::startup_trace(&format!("mtl_compile_shaders begin ({})", _mp_batch.1));
@@ -2201,15 +2085,6 @@ impl Cx {
             }
 
             let cx_shader = &mut self.draw_shaders.shaders[draw_shader_id];
-            if crate::makepad_error_log::trace_enabled("shaderreuse") {
-                crate::log!("shaderreuse: {} {} ({} bytes)", if found_os_shader_id.is_some() { "reused" } else { "NEW" }, cx_shader.debug_id, mtlsl.len());
-                if found_os_shader_id.is_none() {
-                    let dir = std::env::temp_dir().join("makepad-mtlsl");
-                    let _ = std::fs::create_dir_all(&dir);
-                    let n = self.draw_shaders.os_shaders.len();
-                    let _ = std::fs::write(dir.join(format!("{n:04}.metal")), &mtlsl);
-                }
-            }
             if let Some(os_shader_id) = found_os_shader_id {
                 cx_shader.os_shader_id = Some(os_shader_id);
             } else {
@@ -2681,8 +2556,8 @@ fn spawn_hang_watchdog(
                         let _ = writeln!(
                             file,
                             "{} pid={} exe={:?}\n{}",
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
+                            crate::sols_browser_time::SystemTime::now()
+                                .duration_since(crate::sols_browser_time::UNIX_EPOCH)
                                 .map(|d| d.as_secs())
                                 .unwrap_or(0),
                             std::process::id(),
@@ -2841,8 +2716,6 @@ fn staging_pool_return(pool: &StagingReturner, used: Vec<StagingBuffer>) {
     for staging in used {
         // Excess buffers are released on the completion thread. UI never
         // contends with this callback, nor frees a rejected pool return.
-        // Keep fetch_update for older stable toolchains without try_update.
-        #[allow(deprecated)]
         if pool
             .count
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
@@ -2852,8 +2725,6 @@ fn staging_pool_return(pool: &StagingReturner, used: Vec<StagingBuffer>) {
         {
             continue;
         }
-        // Keep fetch_update for older stable toolchains without try_update.
-        #[allow(deprecated)]
         if pool
             .bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |bytes| {
@@ -3213,7 +3084,6 @@ pub struct SlErr {
 impl MetalCx {
     pub(crate) fn new() -> MetalCx {
         let device = get_default_metal_device().expect("Cannot get default metal device");
-        crate::system_info::note_gpu_adapter(&nsstring_to_string(unsafe { msg_send![device, name] }));
         let recommended: u64 = unsafe {
             let available: bool =
                 msg_send![device, respondsToSelector: sel!(recommendedMaxWorkingSetSize)];
@@ -4713,7 +4583,7 @@ impl MetalBuffer {
         }
         // Every copy is whole this frame: a draw item's own data and a
         // retained publication alike (contract §7; pacing is the producer's).
-        let start_time = std::time::Instant::now();
+        let start_time = crate::sols_browser_time::Instant::now();
         if self.pending.is_none() {
             let start = range.start.min(range.end) * 4;
             // Append only beyond the resident prefix: earlier command buffers
@@ -5928,7 +5798,7 @@ impl CxTexture {
         staging_len as u64
     }
 
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
     fn update_shared_texture(&mut self, metal_device: ObjcId) -> IOSurfaceID {
         // we need a width/height for this one.
         if !self.alloc_shared() {
@@ -6700,62 +6570,6 @@ impl EaglRenderBridge {
     }
 }
 
-/// The `gpu.shaders` topic tallies every indexed draw by (shader, draw list)
-/// debug id on the UI thread and prints a per-frame average table every two
-/// seconds: draws, vertices submitted (index count x instances), instances.
-fn gpu_shader_tally(repaint_id: u64, shader: usize, list: LiveId, index_count: u64, instances: u64) {
-    use std::collections::HashMap;
-    #[derive(Default)]
-    struct Tally {
-        started: Option<std::time::Instant>,
-        frames: u64,
-        last_repaint: u64,
-        rows: HashMap<(usize, LiveId), (u64, u64, u64)>,
-    }
-    thread_local! {
-        static TALLY: std::cell::RefCell<Tally> = std::cell::RefCell::new(Tally::default());
-    }
-    TALLY.with(|tally| {
-        let mut tally = tally.borrow_mut();
-        let started = *tally.started.get_or_insert_with(std::time::Instant::now);
-        if tally.last_repaint != repaint_id {
-            tally.last_repaint = repaint_id;
-            tally.frames += 1;
-        }
-        let row = tally.rows.entry((shader, list)).or_default();
-        row.0 += 1;
-        row.1 = row.1.saturating_add(index_count.saturating_mul(instances));
-        row.2 = row.2.saturating_add(instances);
-        if started.elapsed().as_secs_f64() >= 2.0 {
-            let frames = tally.frames.max(1);
-            let mut rows: Vec<_> = tally.rows.iter().map(|(k, v)| (*k, *v)).collect();
-            rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
-            let (draws, verts, inst) = rows.iter().fold((0, 0, 0), |acc, (_, v)| {
-                (acc.0 + v.0, acc.1 + v.1, acc.2 + v.2)
-            });
-            let mut out = format!(
-                "GPUSHADERS frames:{} per-frame draws:{} verts:{} inst:{}\n",
-                frames,
-                draws / frames,
-                verts / frames,
-                inst / frames
-            );
-            for ((shader, list), (d, v, i)) in rows.iter().take(40) {
-                out.push_str(&format!(
-                    "  shader:{:<5} list:{:<22} draws:{:<6} verts:{:<10} inst:{}\n",
-                    shader,
-                    format!("{:?}", list),
-                    d / frames,
-                    v / frames,
-                    i / frames
-                ));
-            }
-            crate::trace!("gpu.shaders", "{}", out);
-            *tally = Tally::default();
-        }
-    });
-}
-
 /// The `gpu.profile` topic prints a per-pass GPU-time + geometry table once
 /// a second from the command-buffer completion threads. Names are the
 /// passes' debug names; ms are summed GPU intervals over the window.
@@ -6771,9 +6585,9 @@ fn gpu_profile_accumulate(label: &str, gpu_seconds: f64, counters: &GpuSampleCou
         instances: u64,
         instance_bytes: u64,
     }
-    static TABLE: Mutex<Option<(std::time::Instant, HashMap<String, Slot>)>> = Mutex::new(None);
+    static TABLE: Mutex<Option<(crate::sols_browser_time::Instant, HashMap<String, Slot>)>> = Mutex::new(None);
     let Ok(mut guard) = TABLE.lock() else { return };
-    let (started, table) = guard.get_or_insert_with(|| (std::time::Instant::now(), HashMap::new()));
+    let (started, table) = guard.get_or_insert_with(|| (crate::sols_browser_time::Instant::now(), HashMap::new()));
     let slot = table.entry(label.to_string()).or_default();
     if gpu_seconds.is_finite() && gpu_seconds > 0.0 {
         slot.gpu_s += gpu_seconds;
@@ -7041,8 +6855,8 @@ static INPUT_AT_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 
 fn now_us() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::sols_browser_time::SystemTime::now()
+        .duration_since(crate::sols_browser_time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)
 }
@@ -7073,8 +6887,8 @@ fn present_pulse() {
     }
     let input_at = INPUT_AT_US.swap(0, std::sync::atomic::Ordering::Relaxed);
     if input_at > 0 {
-        let now_us = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_us = crate::sols_browser_time::SystemTime::now()
+            .duration_since(crate::sols_browser_time::UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
         crate::trace!(
@@ -7083,8 +6897,8 @@ fn present_pulse() {
             (now_us.saturating_sub(input_at)) as f64 / 1000.0
         );
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = crate::sols_browser_time::SystemTime::now()
+        .duration_since(crate::sols_browser_time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
     LAST.with(|last| {

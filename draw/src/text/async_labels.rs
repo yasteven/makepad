@@ -20,6 +20,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TrySendError},
         Arc,
     },
+    time::{Duration, Instant},
 };
 
 use crate::makepad_platform::thread::ui_hang::hashing::{HashMap, HashSet};
@@ -103,8 +104,7 @@ struct InstanceStorage {
     free: Vec<LabelDrawStorage>,
     job: Option<crate::makepad_platform::thread::TaskHandle<Vec<LabelDrawStorage>>>,
     queue_full_reported: bool,
-    /// When to try the storage again, on `makepad_platform::monotonic_seconds`.
-    retry_at: Option<f64>,
+    retry_at: Option<std::time::Instant>,
 }
 
 pub struct LabelDrawStorage {
@@ -221,15 +221,15 @@ impl LabelCache {
         !self.waiting.is_empty() || self.instance_storage.iter().any(|pool| pool.job.is_some())
     }
 
-    pub fn storage_retry_at(&self) -> Option<f64> {
+    pub fn storage_retry_at(&self) -> Option<std::time::Instant> {
         self.instance_storage
             .iter()
             .filter_map(|pool| pool.retry_at)
-            .reduce(f64::min)
+            .min()
     }
     pub fn storage_blocked(&self) -> bool {
         self.storage_retry_at()
-            .is_some_and(|at| at > makepad_platform::monotonic_seconds())
+            .is_some_and(|at| at > std::time::Instant::now())
     }
     fn poll_instance_storage(&mut self) {
         for pool in &mut self.instance_storage {
@@ -237,11 +237,11 @@ impl LabelCache {
                 pool.job = None;
                 match result {
                     Ok(free) => {
-                        pool.retry_at=free.is_empty().then(||makepad_platform::monotonic_seconds()+1.0);
+                        pool.retry_at=free.is_empty().then(||std::time::Instant::now()+std::time::Duration::from_secs(1));
                         pool.free = free;
                     },
                     Err(error) => {
-                        pool.retry_at=Some(makepad_platform::monotonic_seconds()+1.0);
+                        pool.retry_at=Some(std::time::Instant::now()+std::time::Duration::from_secs(1));
                         crate::error!("label instance storage failed: {error:?}");
                     },
                 }
@@ -268,7 +268,7 @@ impl LabelCache {
             && pool.job.is_none()
             && pool
                 .retry_at
-                .is_none_or(|at| at <= makepad_platform::monotonic_seconds())
+                .is_none_or(|at| at <= std::time::Instant::now())
         {
             use crate::makepad_platform::thread::Lane;
             match cx.task_pool().reserve(Lane::Heavy) {
@@ -295,10 +295,10 @@ impl LabelCache {
                 }
                 Err(error) if !pool.queue_full_reported => {
                     pool.queue_full_reported = true;
-                    pool.retry_at=Some(makepad_platform::monotonic_seconds()+1.0);
+                    pool.retry_at=Some(std::time::Instant::now()+std::time::Duration::from_secs(1));
                     crate::log!("label instance storage queue unavailable; retrying: {error:?}");
                 }
-                Err(_) => {pool.retry_at=Some(makepad_platform::monotonic_seconds()+1.0);}
+                Err(_) => {pool.retry_at=Some(std::time::Instant::now()+std::time::Duration::from_secs(1));}
             }
         }
         storage
@@ -311,8 +311,7 @@ impl LabelCache {
         let Some(worker) = self.worker.as_ref() else {
             return false;
         };
-        let start = crate::makepad_platform::monotonic_seconds();
-        let spent = || crate::makepad_platform::monotonic_seconds() - start;
+        let start = Instant::now();
         let mut changed = false;
         while let Some(request) = self.unsent.pop_front() {
             match worker.sender.try_send(request) {
@@ -327,14 +326,14 @@ impl LabelCache {
                     break;
                 }
             }
-            if spent() >= 500e-6 {
+            if start.elapsed() >= Duration::from_micros(500) {
                 break;
             }
         }
         let fonts = cx
             .has_global::<Rc<RefCell<Fonts>>>()
             .then(|| cx.get_global::<Rc<RefCell<Fonts>>>().clone());
-        while spent() < 500e-6 {
+        while start.elapsed() < Duration::from_micros(500) {
             if self.admitting.is_none() {
                 let Ok(run) = worker.receiver.try_recv() else {
                     break;
@@ -350,7 +349,7 @@ impl LabelCache {
                     run.glyphs.clear();
                 }
                 while let Some(glyph) = run.publication.glyphs.get(run.glyphs.len()) {
-                    if spent() >= 500e-6 {
+                    if start.elapsed() >= Duration::from_micros(500) {
                         return changed;
                     }
                     let Some(image) = rasterizer.import_glyph(&glyph.image) else {
@@ -551,14 +550,13 @@ fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn label_cache_worker_shapes_exact_runs_and_ui_only_places_publications() {
         let mut cx = Cx::new(Box::new(|_, _| {}));
         let family = FontFamilyId::from(0x50414e01_u64);
         let font = FontId::from(0x50414e02_u64);
-        let bytes = include_bytes!("../../../widgets/resources/IBMPlexSans-Text.ttf");
+        let bytes = include_bytes!("makepad_widgets:resources/IBMPlexSans-Text.ttf");
         let mut cache = LabelCache::default();
         let key = Key {
             text: cache.intern_text("office · café → libs/"),

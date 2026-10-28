@@ -692,7 +692,7 @@ mod tests {
     }
 
     fn bundled_font_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../widgets/resources/IBMPlexSans-Text.ttf")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("makepad_widgets:resources/IBMPlexSans-Text.ttf")
     }
 
     fn load_test_font() -> std::rc::Rc<crate::text::font::Font> {

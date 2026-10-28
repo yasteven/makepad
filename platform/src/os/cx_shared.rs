@@ -9,7 +9,6 @@ use {
             TimerEvent, TriggerEvent,
         },
         makepad_live_id::{live_id, LiveId},
-        makepad_math::Vec2Index,
         makepad_network::NetworkResponse,
     },
     makepad_studio_protocol::{
@@ -54,7 +53,7 @@ impl Cx {
     pub(crate) fn repaint_windows(&mut self) {
         for draw_pass_id in self.passes.id_iter() {
             match self.passes[draw_pass_id].parent {
-                CxDrawPassParent::Window(_) if self.passes[draw_pass_id].main_draw_list_id.is_some() => {
+                CxDrawPassParent::Window(_) => {
                     self.passes[draw_pass_id].paint_dirty = true;
                 }
                 _ => (),
@@ -92,8 +91,8 @@ impl Cx {
         None
     }
 
-    /// Whether this pass's `repaint_next` (a shader read `draw_pass.time`, or
-    /// a draw call had to be skipped) may re-dirty it.
+    /// Whether the time repaint (`demo_time_repaint`: some shader read
+    /// `draw_pass.time`, so repaint every frame) may re-dirty this pass.
     ///
     /// It used to re-dirty EVERY pass with a main draw list — including
     /// passes their owner did not begin again on the latest redraw, which
@@ -111,7 +110,7 @@ impl Cx {
     /// not the global cycle — so a window that did not redraw this cycle
     /// keeps its time-animated child passes alive (multi-window), while a
     /// child left behind by a window that DID redraw is stale. Window passes
-    /// are live while their window is open; parentless passes compare against the current cycle.
+    /// are always live; parentless passes compare against the current cycle.
     /// Explicit `repaint_pass` users are untouched: this gates only the time
     /// repaint, and dirty propagation to parents is unchanged.
     fn pass_live_for_time_repaint(&self, pass_id: DrawPassId) -> bool {
@@ -119,21 +118,15 @@ impl Cx {
         let Some(list_id) = pass.main_draw_list_id else {
             return false;
         };
-        // A closed window can't paint, so its pass, or a child pass dirtying it, would stay dirty forever.
-        if let CxDrawPassParent::Window(window_id) = pass.parent {
-            return self.windows.is_valid(window_id) && self.windows[window_id].is_created;
+        if matches!(pass.parent, CxDrawPassParent::Window(_)) {
+            return true;
         }
         let reference = match self.pass_root_window(pass_id) {
-            Some(window_id) if self.windows.is_valid(window_id) => {
-                if !self.windows[window_id].is_created {
-                    return false;
-                }
-                self.windows[window_id]
-                    .main_pass_id
-                    .and_then(|main_pass_id| self.passes[main_pass_id].main_draw_list_id)
-                    .map(|main_list_id| self.draw_lists[main_list_id].redraw_id)
-                    .unwrap_or(self.redraw_id)
-            }
+            Some(window_id) if self.windows.is_valid(window_id) => self.windows[window_id]
+                .main_pass_id
+                .and_then(|main_pass_id| self.passes[main_pass_id].main_draw_list_id)
+                .map(|main_list_id| self.draw_lists[main_list_id].redraw_id)
+                .unwrap_or(self.redraw_id),
             _ => self.redraw_id,
         };
         self.draw_lists[list_id].redraw_id >= reference
@@ -177,29 +170,11 @@ impl Cx {
         // its flag cleared so an idle app does not keep requesting frames on
         // its behalf. The one exception is an explicit `repaint_pass`, which
         // paints it this once.
-        let mut time_owed = false;
         for draw_pass_id in self.passes.id_iter() {
             let requested = self.passes[draw_pass_id].repaint_requested;
             if !requested && live[draw_pass_id.0] != Some(true) {
                 self.passes[draw_pass_id].paint_dirty = false;
             }
-            let repaint_next = std::mem::take(&mut self.passes[draw_pass_id].repaint_next);
-            let pass = &self.passes[draw_pass_id];
-            if !(repaint_next || pass.time_owed) {
-                continue;
-            }
-            let live_for_time = live[draw_pass_id.0] == Some(true)
-                && self.pass_live_for_time_repaint(draw_pass_id);
-            // A pass that per-window pacing skipped is still dirty, so it keeps owing its frame,
-            // but one that can't paint anymore (closed window, stale child) owes nothing.
-            if !pass.paint_dirty || !live_for_time {
-                self.passes[draw_pass_id].time_owed = false;
-            }
-            if repaint_next && live_for_time {
-                self.passes[draw_pass_id].paint_dirty = true;
-                self.passes[draw_pass_id].time_owed = true;
-            }
-            time_owed |= self.passes[draw_pass_id].time_owed;
         }
 
         // we need this because we don't mark the entire deptree of passes dirty every small paint
@@ -209,6 +184,11 @@ impl Cx {
             for draw_pass_id in self.passes.id_iter() {
                 if live[draw_pass_id.0] != Some(true) {
                     continue;
+                }
+                if self.demo_time_repaint
+                    && self.pass_live_for_time_repaint(draw_pass_id)
+                {
+                    self.passes[draw_pass_id].paint_dirty = true;
                 }
                 if self.passes[draw_pass_id].paint_dirty {
                     let other = match self.passes[draw_pass_id].parent {
@@ -287,51 +267,7 @@ impl Cx {
             }
         };
         passes_todo.sort_by_key(|id| std::cmp::Reverse(depth_of(*id)));
-        self.pass_time_rebase = !time_owed;
         self.demo_time_repaint = false;
-    }
-
-    /// The `draw_pass.time` for a repaint stamped `now`. Its origin only moves while
-    /// nothing time-driven is on screen, so the f32 stays precise however long the app runs.
-    pub(crate) fn pass_time(&mut self, now: f64) -> f32 {
-        if std::mem::take(&mut self.pass_time_rebase) {
-            self.pass_time_origin = now;
-        }
-        (now - self.pass_time_origin).max(0.0) as f32
-    }
-
-    /// Where popups draw as overlays on their parent's surface (Android, iOS), a dirty
-    /// popup has to repaint its parent window too. Window passes sort last, so we append.
-    #[allow(dead_code)]
-    pub(crate) fn queue_popup_parents(&self, passes_todo: &mut Vec<DrawPassId>) {
-        for i in 0..passes_todo.len() {
-            let CxDrawPassParent::Window(window_id) = self.passes[passes_todo[i]].parent else {
-                continue;
-            };
-            if !self.windows.is_valid(window_id) {
-                continue;
-            }
-            let window = &self.windows[window_id];
-            if !window.is_created || !window.is_popup {
-                continue;
-            }
-            let Some(parent_pass_id) = window
-                .popup_parent
-                .filter(|parent_id| {
-                    self.windows.is_valid(*parent_id)
-                        && self.windows[*parent_id].is_created
-                        && !self.windows[*parent_id].is_popup
-                })
-                .and_then(|parent_id| self.windows[parent_id].main_pass_id)
-            else {
-                continue;
-            };
-            if self.passes[parent_pass_id].main_draw_list_id.is_some()
-                && !passes_todo.contains(&parent_pass_id)
-            {
-                passes_todo.push(parent_pass_id);
-            }
-        }
     }
 
     pub(crate) fn need_redrawing(&self) -> bool {
@@ -345,12 +281,6 @@ impl Cx {
 
         let mut responses = Vec::new();
         while let Some(response) = self.net.try_recv() {
-            if let Some(backlog) = self.studio_backlog.as_mut() {
-                if crate::web_socket::is_studio_socket_response(&response) {
-                    backlog.push_back(response);
-                    continue;
-                }
-            }
             if let Some(msgs) = crate::web_socket::consume_studio_socket_response(&response) {
                 let window_id = CxWindowPool::id_zero();
                 let pos = dvec2(0.0, 0.0);
@@ -814,79 +744,6 @@ impl Cx {
         });
     }
 
-    /// A remote touch at a layout point, delivered the way a touch screen's are.
-    /// `is_cancel` is a `Stop` the system took away, which goes out as `Event::FingerCancel`.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_env = "ohos")))]
-    pub(crate) fn dispatch_remote_touch(
-        &mut self,
-        window_id: crate::window::WindowId,
-        abs: crate::makepad_math::DVec2,
-        uid: u64,
-        state: crate::event::TouchState,
-        is_cancel: bool,
-        modifiers: crate::event::KeyModifiers,
-        time: f64,
-    ) {
-        let touches = vec![crate::event::TouchPoint {
-            state,
-            abs,
-            time,
-            uid,
-            rotation_angle: 0.0,
-            force: 0.0,
-            radius: crate::makepad_math::dvec2(0.0, 0.0),
-            handled: Cell::new(Area::Empty),
-            sweep_lock: Cell::new(Area::Empty),
-        }];
-        if is_cancel {
-            // Like a platform's touch cancel: every capture ends without a release, then it retires.
-            let digit_id: crate::event::DigitId = crate::makepad_live_id::live_id_num!(touch, uid).into();
-            self.fingers.cancel_digit(digit_id);
-            self.call_event_handler(&Event::FingerCancel(crate::event::FingerCancelEvent {
-                window_id,
-                digit_id,
-                device: crate::event::DigitDevice::Touch { uid },
-                abs,
-                time,
-                modifiers,
-            }));
-            self.fingers.process_touch_update_end(&touches);
-            return;
-        }
-        self.fingers.process_touch_update_start(time, &touches);
-        let event = Event::TouchUpdate(crate::event::TouchUpdateEvent {
-            time,
-            window_id,
-            modifiers,
-            touches,
-        });
-        self.call_event_handler(&event);
-        if let Event::TouchUpdate(e) = event {
-            self.fingers.process_touch_update_end(&e.touches);
-        }
-    }
-
-    /// A remote scroll; `phase` is a trackpad gesture's phase, or `None` for a wheel.
-    pub(crate) fn dispatch_scroll_msg(
-        &mut self,
-        e: makepad_studio_protocol::RemoteScroll,
-        phase: crate::event::ScrollPhase,
-        window_id: crate::window::WindowId,
-        pos: crate::makepad_math::DVec2,
-    ) {
-        self.call_event_handler(&Event::Scroll(crate::event::ScrollEvent {
-            abs: self.stdin_pointer_abs(crate::makepad_math::dvec2(e.x, e.y), pos, window_id),
-            scroll: crate::makepad_math::dvec2(e.sx, e.sy),
-            window_id,
-            modifiers: e.modifiers.into_key_modifiers(),
-            handled_x: Cell::new(false),
-            handled_y: Cell::new(false),
-            is_mouse: e.is_mouse,
-            time: e.time,
-            phase,
-        }));
-    }
-
     /// Dispatch a StudioToApp message as an event. Handles input, clipboard,
     /// screenshot, widget dump, and kill. Returns true on Kill (caller should
     /// shut down). Callers handle stdin-specific variants (Swapchain,
@@ -904,97 +761,6 @@ impl Cx {
         let mut abs = crate::makepad_math::dvec2(host.x - window_pos.x, host.y - window_pos.y);
         self.dpi_override_scale(&mut abs, window_id);
         abs
-    }
-
-    /// A host's `StudioToApp::MouseCancel`: a real cancellation, not a
-    /// release. Every capture of the mouse is cancelled and hears
-    /// `Event::FingerCancel` (which hidden widgets admit too); then the
-    /// button is released without any MouseUp being dispatched.
-    pub(crate) fn dispatch_hosted_mouse_cancel(
-        &mut self,
-        e: &makepad_studio_protocol::RemoteMouseUp,
-        window_id: crate::window::WindowId,
-        pos: crate::makepad_math::DVec2,
-    ) {
-        let digit_id = live_id!(mouse).into();
-        let button = crate::event::MouseButton::from_bits_retain(e.button_raw_bits);
-        self.fingers.cancel_digit(digit_id);
-        self.call_event_handler(&Event::FingerCancel(crate::event::FingerCancelEvent {
-            window_id,
-            digit_id,
-            device: crate::event::DigitDevice::Mouse { button },
-            abs: self.stdin_pointer_abs(crate::makepad_math::dvec2(e.x, e.y), pos, window_id),
-            time: e.time,
-            modifiers: e.modifiers.into_key_modifiers(),
-        }));
-        self.fingers.mouse_up(button);
-        self.fingers.cycle_hover_area(live_id!(mouse).into());
-    }
-
-    /// A hosted child on a touch device (an Android child process): the
-    /// host's pointer is a finger, so its press, moves and release arrive as
-    /// one touch, dispatched the way the Activity build dispatches
-    /// `FromJavaMessage::Touch` — lists and scroll views drag-scroll, and a
-    /// press a scroller takes away is cancelled. As mouse events, a press on
-    /// a row captured the mouse and the list refused to scroll under it.
-    /// `state: None` is the host's cancellation (`MouseCancel`).
-    #[cfg(target_os = "android")]
-    pub(crate) fn dispatch_hosted_touch(
-        &mut self,
-        state: Option<crate::event::finger::TouchState>,
-        at: crate::makepad_math::DVec2,
-        time: f64,
-        window_id: crate::window::WindowId,
-        pos: crate::makepad_math::DVec2,
-    ) {
-        use crate::event::finger::{TouchPoint, TouchState};
-        let abs = self.stdin_pointer_abs(at, pos, window_id);
-        let touch = |state| TouchPoint {
-            state,
-            abs,
-            time,
-            uid: 0,
-            rotation_angle: 0.0,
-            force: 0.0,
-            radius: crate::makepad_math::dvec2(1.0, 1.0),
-            handled: Cell::new(Area::Empty),
-            sweep_lock: Cell::new(Area::Empty),
-        };
-        let Some(state) = state else {
-            let digit_id: crate::event::DigitId = crate::makepad_live_id::live_id_num!(touch, 0).into();
-            self.fingers.cancel_digit(digit_id);
-            self.call_event_handler(&Event::FingerCancel(crate::event::FingerCancelEvent {
-                window_id,
-                digit_id,
-                device: crate::event::DigitDevice::Touch { uid: 0 },
-                abs,
-                time,
-                modifiers: Default::default(),
-            }));
-            self.fingers.process_touch_update_end(&[touch(TouchState::Stop)]);
-            self.update_pointer_capture_pacing();
-            self.send_studio_key_focus_rect_response();
-            return;
-        };
-        if state == TouchState::Start {
-            self.activate_window_on_pointer_down(window_id);
-        }
-        let touches = vec![touch(state)];
-        self.fingers.process_touch_update_start(time, &touches);
-        let e = Event::TouchUpdate(crate::event::TouchUpdateEvent {
-            time,
-            window_id,
-            touches,
-            modifiers: Default::default(),
-        });
-        self.call_event_handler(&e);
-        if let Event::TouchUpdate(e) = e {
-            self.fingers.process_touch_update_end(&e.touches);
-        }
-        self.update_pointer_capture_pacing();
-        if state == TouchState::Stop {
-            self.send_studio_key_focus_rect_response();
-        }
     }
 
     pub fn dispatch_studio_msg(
@@ -1034,11 +800,6 @@ impl Cx {
                 self.fingers.cycle_hover_area(live_id!(mouse).into());
                 self.fingers.switch_captures();
             }
-            StudioToApp::MouseCancel(e) => {
-                self.dispatch_hosted_mouse_cancel(&e, window_id, pos);
-                self.update_pointer_capture_pacing();
-                self.send_studio_key_focus_rect_response();
-            }
             StudioToApp::MouseUp(e) => {
                 let event = crate::event::MouseUpEvent {
                     abs: self.stdin_pointer_abs(crate::makepad_math::dvec2(e.x, e.y), pos, window_id),
@@ -1055,7 +816,17 @@ impl Cx {
                 self.send_studio_key_focus_rect_response();
             }
             StudioToApp::Scroll(e) => {
-                self.dispatch_scroll_msg(e, crate::event::ScrollPhase::None, window_id, pos);
+                self.call_event_handler(&Event::Scroll(crate::event::ScrollEvent {
+                    abs: self.stdin_pointer_abs(crate::makepad_math::dvec2(e.x, e.y), pos, window_id),
+                    scroll: crate::makepad_math::dvec2(e.sx, e.sy),
+                    window_id,
+                    modifiers: e.modifiers.into_key_modifiers(),
+                    handled_x: Cell::new(false),
+                    handled_y: Cell::new(false),
+                    is_mouse: e.is_mouse,
+                    time: e.time,
+                    phase: crate::event::ScrollPhase::None,
+                }));
             }
             StudioToApp::Pinch(e) => {
                 self.call_event_handler(&Event::Pinch(crate::event::PinchEvent {
@@ -1148,7 +919,6 @@ impl Cx {
                     self.call_event_handler(&Event::Custom(data));
                 }
             }
-            StudioToApp::Relay(relay) => self.handle_host_relay(relay),
             StudioToApp::KeepAlive | StudioToApp::None => {}
             StudioToApp::LiveChange { file_name, content } => {
                 self.script_data
@@ -1244,14 +1014,6 @@ impl Cx {
                 }
             }
             LiveEditTrigger::Manual => {
-                // A style reload re-evaluates Splash modules under the names
-                // they had, so their bodies' script addresses now hold new
-                // code: the object and function-address shader caches would
-                // hand back the previous shaders (or another template's).
-                // Only the code-keyed cache stays valid.
-                if self.pending_style_reload {
-                    self.draw_shaders.reset_for_live_reload();
-                }
                 // Clear `pending_script_reapply` defensively — LiveEdit's
                 // script_mod re-run clobbers heap overrides anyway, and an
                 // app-level handler that re-broadcasts sets a fresh flag
@@ -1367,17 +1129,6 @@ impl Cx {
             self.invoke_event_handler(event);
         }
         drop(dispatch_guard);
-        // A claim during this event cancelled presses that were already
-        // handled earlier in it: each loser gets its terminal cancelled
-        // FingerUp now, before any further input, from a dispatch of its own.
-        let pending = self.fingers.take_pending_cancels(0.0);
-        if !pending.is_empty() {
-            let now = self.seconds_since_app_start();
-            for mut cancel in pending {
-                cancel.time = now;
-                self.inner_call_event_handler(&Event::FingerCancel(cancel));
-            }
-        }
         if perf_timing {
             if let Some(t0) = perf_t0 {
                 self.perf_monitor.add(
@@ -1553,39 +1304,7 @@ impl Cx {
         if let Event::PermissionResult(result) = event {
             self.handle_camera_permission_result(result);
         }
-        // A press ends the scroll gesture in progress, as it ends a wheel scroll in browsers.
-        let is_press = match event {
-            Event::MouseDown(_) => true,
-            Event::TouchUpdate(e) => e.touches.iter().any(|t| t.state == crate::event::TouchState::Start),
-            _ => false,
-        };
-        if is_press {
-            self.fingers.scroll_latch.reset();
-        }
-        // Moving the pointer off a wheel scroll's owner once the wheel rests ends that owner's scroll.
-        if let Event::MouseMove(e) = event {
-            if self.fingers.scroll_latch.is_wheel_resting(e.time) {
-                for axis in [Vec2Index::X, Vec2Index::Y] {
-                    let owner = self.fingers.scroll_latch.owner(axis);
-                    if !owner.is_empty() && !owner.clipped_rect(self).contains(e.abs) {
-                        self.fingers.scroll_latch.release(axis);
-                    }
-                }
-            }
-        }
-        if let Event::Scroll(e) = event {
-            // A sweep lock is checked as each owner handles the event instead, since an open modal
-            // holds one and lifts it only while its content handles events.
-            let are_owners_live = [Vec2Index::X, Vec2Index::Y].map(|axis| {
-                let owner = self.fingers.scroll_latch.owner(axis);
-                owner.is_valid(self) && self.is_scrolling_allowed_within(&owner)
-            });
-            self.fingers.scroll_latch.begin_event(e, are_owners_live);
-        }
         self.inner_call_event_handler(event);
-        if let Event::Scroll(e) = event {
-            self.fingers.scroll_latch.end_event(e);
-        }
         // Dispatch any synthetic geom changes queued during the original
         // handler (e.g. runtime dpi_override updates) before triggers and
         // actions, so layout-dependent reactions see the new geometry.
@@ -1664,21 +1383,11 @@ impl Cx {
         if let Err(payload) = drawn {
             std::panic::resume_unwind(payload);
         }
-        self.validate_scoped_sweep_locks_after_draw();
         if let Some(mut hook) = self.post_draw_hook.take() {
             hook(self);
             if self.post_draw_hook.is_none() {
                 self.post_draw_hook = Some(hook);
             }
-        }
-
-        // The frame's recording boundary: every draw list has finished
-        // recording. The geometries dropped since the last redraw are freed
-        // now, except those a live draw call still names (see
-        // `CxGeometryPool`); the scan runs only when something was dropped.
-        if self.geometries.has_unreleased() {
-            let referenced = self.draw_lists.referenced_geometries();
-            self.geometries.release_unreferenced(&referenced);
         }
 
         if Cx::has_studio_web_socket() {
@@ -1762,69 +1471,6 @@ mod tests {
         assert!(!todo.contains(&child_id));
     }
 
-    fn pass_with_current_list(cx: &mut Cx) -> (DrawPass, DrawList) {
-        let pass = DrawPass::new(cx);
-        let list = DrawList::new(cx);
-        let recording_gen = cx.next_uniform_gen();
-        let uniforms_gen = cx.next_uniform_gen();
-        let redraw_id = cx.redraw_id;
-        cx.draw_lists[list.id()].clear_draw_items(redraw_id, recording_gen, uniforms_gen);
-        cx.passes[pass.draw_pass_id()].main_draw_list_id = Some(list.id());
-        (pass, list)
-    }
-
-    #[test]
-    fn time_repaint_only_repaints_the_passes_that_asked() {
-        let mut cx = Cx::new(Box::new(|_, _| {}));
-        let (animated, _animated_list) = pass_with_current_list(&mut cx);
-        let (idle, _idle_list) = pass_with_current_list(&mut cx);
-        let (animated, idle) = (animated.draw_pass_id(), idle.draw_pass_id());
-        let mut todo = Vec::new();
-
-        cx.passes[animated].repaint_next = true;
-        cx.demo_time_repaint = true;
-        cx.compute_pass_repaint_order(&mut todo);
-        assert_eq!(todo, vec![animated]);
-        assert!(!cx.passes[idle].paint_dirty);
-
-        // The flag is used up: without another request nothing repaints.
-        cx.passes[animated].paint_dirty = false;
-        cx.compute_pass_repaint_order(&mut todo);
-        assert!(todo.is_empty());
-    }
-
-    #[test]
-    fn pass_clock_rebases_only_while_nothing_owes_a_time_frame() {
-        let mut cx = Cx::new(Box::new(|_, _| {}));
-        let (pass, _list) = pass_with_current_list(&mut cx);
-        let pass = pass.draw_pass_id();
-        let mut todo = Vec::new();
-
-        assert_eq!(cx.pass_time(100.0), 0.0);
-        assert_eq!(cx.pass_time(100.5), 0.5);
-
-        // An animating pass holds the origin, even on a beat that skips painting it.
-        cx.passes[pass].repaint_next = true;
-        cx.compute_pass_repaint_order(&mut todo);
-        assert_eq!(cx.pass_time(101.0), 1.0);
-        cx.compute_pass_repaint_order(&mut todo);
-        assert_eq!(cx.pass_time(101.5), 1.5);
-
-        // Once it painted without asking again, the next repaint starts the clock over.
-        cx.passes[pass].paint_dirty = false;
-        cx.compute_pass_repaint_order(&mut todo);
-        assert_eq!(cx.pass_time(200.0), 0.0);
-        assert_eq!(cx.pass_time(200.25), 0.25);
-
-        // A pass that still owes a frame but was left behind by a redraw can't paint, so it owes nothing.
-        cx.passes[pass].repaint_next = true;
-        cx.compute_pass_repaint_order(&mut todo);
-        assert_eq!(cx.pass_time(201.0), 1.0);
-        cx.redraw_id += 1;
-        cx.compute_pass_repaint_order(&mut todo);
-        assert_eq!(cx.pass_time(300.0), 0.0);
-    }
-
     #[test]
     fn platform_monotonic_time_moves_forward() {
         let wall = Cx::time_now();
@@ -1863,37 +1509,6 @@ mod tests {
         assert_eq!(calls.get(), 2);
     }
 
-    /// A host's `StudioToApp::MouseCancel` reaches the child as a real
-    /// cancellation — `Event::FingerCancel`, which hidden widgets admit —
-    /// never as a MouseUp, and the mouse's press is retired afterwards.
-    #[test]
-    fn a_hosted_mouse_cancel_is_a_finger_cancel_not_a_mouse_up() {
-        let seen = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-        let log = seen.clone();
-        let mut cx = Cx::new(Box::new(move |_cx, event| {
-            log.borrow_mut().push(event.name().to_string());
-        }));
-        let window = crate::window::WindowId(0, 0);
-        cx.fingers.mouse_down(crate::event::MouseButton::PRIMARY, window);
-        cx.fingers.capture_digit(live_id!(mouse).into(), Area::Empty, Area::Empty, 0.0, crate::makepad_math::dvec2(5.0, 5.0));
-        assert!(cx.fingers.any_areas_captured());
-        // The studio arm is exactly this plus the app-only capture pacing.
-        cx.dispatch_hosted_mouse_cancel(
-            &makepad_studio_protocol::RemoteMouseUp {
-                button_raw_bits: crate::event::MouseButton::PRIMARY.bits(),
-                x: 5.0,
-                y: 5.0,
-                ..Default::default()
-            },
-            window,
-            crate::makepad_math::dvec2(0.0, 0.0),
-        );
-        let seen = seen.borrow();
-        assert!(seen.iter().any(|n| n == "FingerCancel"), "no FingerCancel: {seen:?}");
-        assert!(!seen.iter().any(|n| n == "MouseUp"), "the cancel was dispatched as a MouseUp: {seen:?}");
-        assert!(!cx.fingers.any_areas_captured(), "the cancelled press was not retired");
-    }
-
     #[test]
     fn panicking_event_handler_is_restored() {
         let calls = Rc::new(Cell::new(0));
@@ -1928,34 +1543,9 @@ impl Cx {
     /// is replaced by it (a frame can only show the pointer's latest
     /// position). Everything else keeps its order, so a Down/Up/Scroll
     /// still sees the move that preceded it.
-    #[cfg(any(
-        gpusim,
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "android",
-        all(target_os = "linux", not(target_env = "ohos")),
-    ))]
+    #[cfg(not(target_os = "android"))]
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
     #[cfg(any(not(linux_direct), use_vulkan))]
-    /// Only the Ticks of a batch fold into its last; every pointer sample
-    /// stays (a touch child's velocity tracker needs each one).
-    #[allow(dead_code)]
-    pub(crate) fn stdin_coalesce_host_ticks(msgs: &mut Vec<StudioToApp>) {
-        let ticks = msgs.iter().filter(|msg| matches!(msg, StudioToApp::Tick)).count();
-        if ticks < 2 {
-            return;
-        }
-        let mut seen = 0;
-        msgs.retain(|msg| {
-            if matches!(msg, StudioToApp::Tick) {
-                seen += 1;
-                seen == ticks
-            } else {
-                true
-            }
-        });
-    }
-
-    #[allow(dead_code)]
     pub(crate) fn stdin_coalesce_host_batch(msgs: &mut Vec<StudioToApp>) {
         let ticks = msgs
             .iter()
@@ -1996,12 +1586,8 @@ impl Cx {
     /// child that fell behind sees its whole backlog at once and can
     /// coalesce it. Returns true when the socket closed or failed; the
     /// caller dispatches what it has and then leaves its loop.
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "android",
-        all(target_os = "linux", not(target_env = "ohos")),
-    ))]
+    #[cfg(not(target_os = "android"))]
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
     #[cfg(all(not(gpusim), any(not(linux_direct), use_vulkan)))]
     // The direct Vulkan loop drains inline (it also polls its GPU inbox
     // between batches); every blocking hosted loop uses this.

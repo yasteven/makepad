@@ -70,7 +70,6 @@ pub mod linux_gpu;
 
 #[cfg(all(not(gpusim), not(linux_direct), any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 mod app_icon;
-pub mod app_meta;
 mod area;
 pub mod component;
 mod component_list;
@@ -100,9 +99,6 @@ pub mod web_socket;
 pub mod audio_stream;
 
 pub mod file_dialogs;
-pub mod hosted_relay;
-#[cfg(any(linux_direct, test))]
-mod direct_clipboard;
 
 mod media_api;
 mod media_host;
@@ -117,39 +113,14 @@ pub mod font_policy;
 
 #[macro_use]
 mod app_main;
-pub mod mcp_relay;
 pub mod remote;
 pub mod devtools;
 pub mod pixel_probe;
 pub mod screen_capture;
-pub mod system_info;
-pub mod clipboard_read;
-pub mod window_snapshot;
 pub mod audio_output_tap;
-pub mod log_ring;
-
-/// Seconds on a monotonic clock, from an arbitrary start. Portable where
-/// `std::time::Instant` is not: on wasm32-unknown-unknown std has no clock
-/// (`Instant::now()` panics, "time not implemented on this platform"), so
-/// code that runs in a web build measures time with this instead.
-pub fn monotonic_seconds() -> f64 {
-    #[cfg(all(not(gpusim), target_arch = "wasm32"))]
-    {
-        crate::Cx::monotonic_now()
-    }
-    #[cfg(not(all(not(gpusim), target_arch = "wasm32")))]
-    {
-        use std::sync::OnceLock;
-        use std::time::Instant;
-        static START: OnceLock<Instant> = OnceLock::new();
-        START.get_or_init(Instant::now).elapsed().as_secs_f64()
-    }
-}
-pub mod midi_inject;
-pub mod audio_output_fence;
 pub mod shader_error;
 pub use crate::app_main::{
-    attach_parent_console, new_cx_with_font_set, resolve_studio_http, should_run_stdin_loop_from_env,
+    new_cx_with_font_set, resolve_studio_http, should_run_stdin_loop_from_env,
 };
 // Working-tree startup instrumentation (`MAKEPAD_TRACE=startup`).
 pub use crate::cx::{
@@ -189,14 +160,13 @@ pub use {
         component::{ComponentInfo, ComponentRegistries, ComponentRegistry},
         cursor::MouseCursor,
         cx::{Cx, CxMemoryReport, CxRef, GpuBackend, LinuxWindowParams, OsType},
-        cx_api::{AccessibilityUpdatePayload, CxOsApi, CxOsOp, CxThreadPriority, HapticFeedback, OpenUrlInPlace, ScreenEdges},
+        cx_api::{AccessibilityUpdatePayload, CxOsApi, CxOsOp, CxThreadPriority, OpenUrlInPlace, ScreenEdges},
         display_context::{DisplayContext, SystemBarAppearance},
         font_policy::{
             extend_font_asset_manifest, font_asset_manifest_len, FontAsset, FontChain, FontPolicy,
             FontRole, FontSet, LazyFontAsset, LazyFontFamily, FONT_ASSET_MANIFEST_SECTION,
             INTERNATIONAL_FONT_ASSET_MANIFEST, LATIN_FONT_ASSET_MANIFEST,
-            LATIN_FONT_ASSET_PACKAGE_MANIFEST, MATH_VIEW_FONT_ASSET, INTER_FONT_ASSET,
-            ROBOTO_FLEX_FONT_ASSET, UI_SYMBOL_FALLBACK,
+            LATIN_FONT_ASSET_PACKAGE_MANIFEST, MATH_VIEW_FONT_ASSET, UI_SYMBOL_FALLBACK,
         },
         draw_list::{CxDrawCall, CxDrawItem, CxDrawListPool, CxRectArea, DrawList, DrawListId, DrawListRecordingStorage},
         shared_instances::{
@@ -212,9 +182,6 @@ pub use {
         draw_vars::DrawVars,
         sploded::{SplodedParams, SplodedView},
         event::{
-            BackGestureEdge,
-            BackGestureEvent,
-            BackGestureState,
             CancelScope,
             CancelScopeKind,
             CharOffset,
@@ -345,7 +312,6 @@ pub use {
             ScriptWindowHandle, WaylandDecorationPreference, WindowBackdrop, WindowHandle,
             WindowIcon, WindowIconBuffer, WindowId, WindowVisuals,
         },
-        window_snapshot::WindowSnapshotState,
         xr_tsdf::{
             ChunkKey, SparseTsdGridReadSnapshot, SparseTsdReadChunk, TsdfPublishedSnapshot,
             XrTsdfState, XrTsdfStats, XrTsdfStore,
@@ -377,3 +343,6 @@ pub use {
 /// The compiled-shader handle the const-table API is keyed by
 /// (`Cx::shader_const_table`, `shader_const_patch`, `shader_const_reset`).
 pub use crate::draw_shader::DrawShaderId;
+
+// Shared browser clocks; native builds re-export std::time.
+pub mod sols_browser_time;

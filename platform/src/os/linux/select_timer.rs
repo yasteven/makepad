@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, mem, os::raw::c_int, ptr, sync::OnceLock, time::Instant};
+use std::collections::VecDeque;
+use std::mem;
+use std::os::raw::c_int;
+use std::ptr;
+use std::sync::OnceLock;
+use crate::sols_browser_time::Instant;
 
 use self::super::libc_sys;
 

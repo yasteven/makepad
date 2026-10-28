@@ -564,22 +564,6 @@ fn validate_key(key: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
-/// Bytes the volume holding `path` has available to this process, as the
-/// operating system reports them; `path` must exist. What an application
-/// has to size a store by, instead of a figure of its own.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn volume_available_bytes(path: &std::path::Path) -> Result<u64, StorageError> {
-    native::volume_available_bytes(path)
-}
-
-/// The browser does not say how much its origin may store.
-#[cfg(target_arch = "wasm32")]
-pub fn volume_available_bytes(_path: &std::path::Path) -> Result<u64, StorageError> {
-    Err(StorageError::Unsupported(
-        "the volume's free space is not known in the browser".into(),
-    ))
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod native {
     use {
@@ -727,7 +711,7 @@ pub(crate) mod native {
         target_pointer_width = "64",
         not(any(target_os = "macos", target_os = "ios", target_os = "tvos"))
     ))]
-    pub fn volume_available_bytes(path: &Path) -> Result<u64, StorageError> {
+    fn volume_available_bytes(path: &Path) -> Result<u64, StorageError> {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
 
@@ -763,7 +747,7 @@ pub(crate) mod native {
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
-    pub fn volume_available_bytes(path: &Path) -> Result<u64, StorageError> {
+    fn volume_available_bytes(path: &Path) -> Result<u64, StorageError> {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
 
@@ -804,7 +788,7 @@ pub(crate) mod native {
     }
 
     #[cfg(windows)]
-    pub fn volume_available_bytes(path: &Path) -> Result<u64, StorageError> {
+    fn volume_available_bytes(path: &Path) -> Result<u64, StorageError> {
         use std::os::windows::ffi::OsStrExt;
         unsafe extern "system" {
             fn GetDiskFreeSpaceExW(
@@ -825,7 +809,7 @@ pub(crate) mod native {
     }
 
     #[cfg(not(any(windows, all(unix, target_pointer_width = "64"))))]
-    pub fn volume_available_bytes(_path: &Path) -> Result<u64, StorageError> {
+    fn volume_available_bytes(_path: &Path) -> Result<u64, StorageError> {
         Err(StorageError::Unsupported(
             "native storage quota estimate is unsupported on this target".into(),
         ))
@@ -998,7 +982,8 @@ pub(crate) mod native {
     #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     mod tests {
         use super::*;
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use crate::sols_browser_time::SystemTime;
+use crate::sols_browser_time::UNIX_EPOCH;
 
         struct TempDir(PathBuf);
 

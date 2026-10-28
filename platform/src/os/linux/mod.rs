@@ -97,11 +97,6 @@ pub(crate) fn wake_ui_event_loop() {
 
 #[cfg(target_os = "android")]
 pub(crate) fn wake_ui_event_loop() {
-    // A hosted child's loop waits on its host socket, not on Java.
-    if android::android_hosted::is_hosted() {
-        android::android_hosted::hosted_wake();
-        return;
-    }
     android::android_jni::send_from_java_message(
         android::android_jni::FromJavaMessage::RenderLoop,
     );
@@ -159,8 +154,6 @@ pub(crate) mod hosted_gpu;
 #[cfg(not(any(target_env = "ohos", target_os = "android")))]
 pub(crate) mod hosted_gpu_sender;
 
-// Only the direct (DRM/KMS) backend calls into libdrm, and the `#[link]` in here
-// makes every Linux binary need it at link time, so it follows the same gate.
-#[cfg(linux_direct)]
+#[cfg(not(any(target_env = "ohos", target_os = "android")))]
 #[path = "direct/drm_sys.rs"]
 pub mod drm_sys;

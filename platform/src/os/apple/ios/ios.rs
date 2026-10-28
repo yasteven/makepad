@@ -557,12 +557,11 @@ impl Cx {
         }
         let mut passes_todo = Vec::new();
         self.compute_pass_repaint_order(&mut passes_todo);
-        self.queue_popup_parents(&mut passes_todo);
         self.repaint_id += 1;
         for draw_pass_id in &passes_todo {
             let uniforms_gen = self.next_uniform_gen();
-            let time = self.pass_time(with_ios_app(|app| app.time_now()));
-            self.passes[*draw_pass_id].set_time(time, uniforms_gen);
+            self.passes[*draw_pass_id]
+                .set_time(with_ios_app(|app| app.time_now() as f32), uniforms_gen);
             match self.passes[*draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {}
                 CxDrawPassParent::Window(window_id) => {
@@ -967,44 +966,6 @@ impl Cx {
                         vm.gc();
                     }
                 });
-            }
-            IosEvent::TouchCancel(e) => {
-                // `touchesCancelled`: the stopped touches were taken away, not
-                // lifted. Each is cancelled for every capture, dispatched as
-                // `Event::FingerCancel` (raw consumers see a cancel, never a
-                // release; an internal drag ends with no drop) and retired.
-                // Touches still down in the same batch go on as usual.
-                let (stopped, rest): (Vec<_>, Vec<_>) =
-                    e.touches.iter().cloned().partition(|t| t.state == crate::event::TouchState::Stop);
-                let window = &self.windows[e.window_id];
-                let stopped: Vec<_> = stopped
-                    .into_iter()
-                    .map(|mut t| {
-                        t.abs = window.native_vec2d_to_layout(t.abs);
-                        t.radius = window.native_vec2d_to_layout(t.radius);
-                        t
-                    })
-                    .collect();
-                for t in &stopped {
-                    let digit_id: crate::event::DigitId = crate::makepad_live_id::live_id_num!(touch, t.uid).into();
-                    self.fingers.cancel_digit(digit_id);
-                    self.call_event_handler(&Event::FingerCancel(crate::event::FingerCancelEvent {
-                        window_id: e.window_id,
-                        digit_id,
-                        device: crate::event::DigitDevice::Touch { uid: t.uid },
-                        abs: t.abs,
-                        time: e.time,
-                        modifiers: e.modifiers,
-                    }));
-                }
-                if !stopped.is_empty() && self.os.internal_drag_items.take().is_some() {
-                    self.call_event_handler(&Event::DragEnd);
-                    self.drag_drop.cycle_drag();
-                }
-                self.fingers.process_touch_update_end(&stopped);
-                if !rest.is_empty() {
-                    return self.ios_event_callback(IosEvent::TouchUpdate(crate::event::TouchUpdateEvent { touches: rest, ..e }), metal_cx);
-                }
             }
             IosEvent::TouchUpdate(mut e) => {
                 let window = &self.windows[e.window_id];
@@ -1917,7 +1878,6 @@ impl CxOsApi for Cx {
     }
 
     fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
-        if self.script_data.std.host_io_only() { return; }
         crate::error!("open_url not implemented on this platform");
     }
 

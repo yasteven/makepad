@@ -713,13 +713,6 @@ impl Widget for FabSheetView {
                     self.down_at = None;
                     return;
                 }
-                if self.sliding && fe.cancelled {
-                    // Taken away: the cut stays where the slide last put it.
-                    self.sliding = false;
-                    self.drag = None;
-                    self.down_at = None;
-                    return;
-                }
                 if self.sliding {
                     self.sliding = false;
                     self.plan_settings.cut_height = self.cut_from_x(fe.abs.x);
@@ -727,12 +720,10 @@ impl Widget for FabSheetView {
                     self.area.redraw(cx);
                     return;
                 }
-                // A press taken away is no click.
-                let click = !fe.cancelled
-                    && self
-                        .down_at
-                        .map(|d| (fe.abs - d).length() < 4.0)
-                        .unwrap_or(false);
+                let click = self
+                    .down_at
+                    .map(|d| (fe.abs - d).length() < 4.0)
+                    .unwrap_or(false);
                 self.drag = None;
                 self.down_at = None;
                 cx.set_cursor(MouseCursor::Default);

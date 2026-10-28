@@ -10,7 +10,6 @@ use {
         egl_sys::{self, LibEgl, EGL_NONE},
         event::{Event, KeyCode, KeyEvent, TouchUpdateEvent, VirtualKeyboardEvent, WindowGeom},
         gpu_info::GpuPerformance,
-        makepad_live_id::LiveId,
         makepad_math::*,
         os::cx_native::EventFlow,
         shared_framebuf::{PollTimer, PollTimers},
@@ -136,9 +135,7 @@ impl Cx {
     }
 
     fn handle_drawing(&mut self) {
-        // Time-animated passes don't turn dirty until compute_pass_repaint_order,
-        // so demo_time_repaint must keep us rendering.
-        if self.any_passes_dirty() || self.demo_time_repaint || self.need_redrawing() || !self.new_next_frames.is_empty() {
+        if self.any_passes_dirty() || self.need_redrawing() || !self.new_next_frames.is_empty() {
             let time_now = self.os.timers.time_now();
             if !self.new_next_frames.is_empty() {
                 self.call_next_frame_event(time_now);
@@ -213,24 +210,6 @@ impl Cx {
                 self.redraw_all();
                 self.os.first_after_resize = true;
                 self.call_event_handler(&Event::ClearAtlasses);
-            }
-            FromOhosMessage::TouchCancel(mut touches) => {
-                let window_id = CxWindowPool::id_zero();
-                let dpi_factor = self.windows[window_id].dpi_override.unwrap_or(self.os.dpi_factor);
-                for touch in &mut touches {
-                    touch.abs /= dpi_factor;
-                    let digit_id = crate::makepad_live_id::live_id_num!(touch, touch.uid).into();
-                    self.fingers.cancel_digit(digit_id);
-                    self.call_event_handler(&Event::FingerCancel(crate::event::FingerCancelEvent {
-                        window_id,
-                        digit_id,
-                        device: crate::event::DigitDevice::Touch { uid: touch.uid },
-                        abs: touch.abs,
-                        time: touch.time,
-                        modifiers: Default::default(),
-                    }));
-                }
-                self.fingers.process_touch_update_end(&touches);
             }
             FromOhosMessage::Touch(mut touches) => {
                 let time = touches[0].time;
@@ -526,8 +505,8 @@ impl Cx {
         self.repaint_id += 1;
         for draw_pass_id in &passes_todo {
             let uniforms_gen = self.next_uniform_gen();
-            let time = self.pass_time(self.os.timers.time_now());
-            self.passes[*draw_pass_id].set_time(time, uniforms_gen);
+            self.passes[*draw_pass_id]
+                .set_time(self.os.timers.time_now() as f32, uniforms_gen);
             match self.passes[*draw_pass_id].parent.clone() {
                 CxDrawPassParent::Xr => {}
                 CxDrawPassParent::Window(_window_id) => {
@@ -640,7 +619,6 @@ impl CxOsApi for Cx {
     }
 
     fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {
-        if self.script_data.std.host_io_only() { return; }
         crate::error!("open_url not implemented on this platform");
     }
 

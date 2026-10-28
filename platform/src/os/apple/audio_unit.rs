@@ -1865,7 +1865,7 @@ impl AudioUnit {
             }
             let handler: ObjcId = msg_send![class!(VNImageRequestHandler), alloc];
             let handler: ObjcId = msg_send![handler, initWithCGImage: cg_image options: nil];
-            let start_time = std::time::Instant::now();
+            let start_time = crate::sols_browser_time::Instant::now();
             let completion = objc_block!(move | request: ObjcId, error: ObjcId | {
 
                 log!("Profile time {}", (start_time.elapsed().as_nanos() as f64) / 1000000f64);

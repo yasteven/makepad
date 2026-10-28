@@ -2,6 +2,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{error::GitError, object::ObjectKind, oid::ObjectId, sha1::Sha1};
@@ -27,7 +28,10 @@ impl Drop for TempDir {
 
 pub fn tempdir() -> io::Result<TempDir> {
     let pid = std::process::id();
-    let epoch_nanos = crate::clock::unix_nanos();
+    let epoch_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let seq = NEXT_TEMP_DIR_ID.fetch_add(1, Ordering::Relaxed);
 
     for attempt in 0..64_u32 {

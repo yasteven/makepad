@@ -81,9 +81,6 @@ pub struct NotesView {
     pending_nav: bool,
     #[rust]
     navigation_frame: NextFrame,
-    /// The screen a swipe or back gesture is revealing beneath the current one.
-    #[rust]
-    revealed_screen: Option<Screen>,
     #[rust]
     transferred_surface: Option<(NoteId, SurfaceState)>,
     #[rust]
@@ -498,7 +495,6 @@ impl NotesView {
         self.redraw(cx);
     }
     fn open_overlay(&mut self, cx: &mut Cx, kind: OverlayKind, invoker: WidgetRef) {
-        self.end_interactive_pop(cx);
         self.flush_editor(cx);
         self.overlay = kind;
         self.invoker = invoker;
@@ -611,7 +607,7 @@ impl NotesView {
                 tap.nav_name = count.collection.label().into();
                 tap.reduced_motion = self.reduced_motion;
             }
-            let h = if compact { 56.0 } else { 44.0 };
+            let h = if compact { 52.0 } else { 44.0 };
             let font = if compact { 12.75 } else { 10.5 };
             script_apply_eval!(cx,row,{use mod.prelude.widgets.* height:#(h) tap +: {name +: {draw_text.text_style.font_size:#(font)}}});
             let mut count_widget = row.widget(cx, ids!(tap.count));
@@ -645,14 +641,11 @@ impl NotesView {
         }
         let compact = self.layout.is_compact();
         let screen = engine::current_screen(&self.ui);
-        let shows_folders =
-            screen == Screen::Folders || self.revealed_screen == Some(Screen::Folders);
-        let shows_list = screen == Screen::List || self.revealed_screen == Some(Screen::List);
         if !compact && self.layout.is_three() {
             let rows = self.view.widget(cx, ids!(wide.folders.rows));
             self.configure_folders(cx, rows, false, false);
         }
-        if compact && shows_folders {
+        if compact && screen == Screen::Folders {
             let rows = self
                 .view
                 .widget(cx, ids!(compact.root_view.scroll.group.rows));
@@ -669,7 +662,7 @@ impl NotesView {
                 collection,
             );
             self.text(cx, ids!(wide.notes_list.count), &count_text);
-        } else if shows_list {
+        } else if screen == Screen::List {
             self.text(cx, ids!(compact.list_view.screen.title), collection);
             self.text(cx, ids!(compact.list_view.screen.count), &count_text);
         }
@@ -681,7 +674,7 @@ impl NotesView {
                 ids!(wide.notes_list.search_slot.search)
             },
         );
-        if !compact || shows_list {
+        if !compact || screen == Screen::List {
             let field = search.text_input(cx, ids!(field));
             field.set_empty_text(cx, self.ui.collection.search_placeholder());
             if field.text() != self.ui.query {
@@ -922,7 +915,7 @@ impl NotesView {
         self.set_path_visible(cx, ids!(wide.notes_list.short_header), !decision.is_three());
         self.set_path_visible(cx, ids!(wide.notes_list.count), !decision.short_chrome);
         let width = engine::list_column_width(decision, size.x);
-        let toolbar_height = if decision.short_chrome { 48.0 } else { 56.0 };
+        let toolbar_height = if decision.short_chrome { 44.0 } else { 56.0 };
         let mut list = self.view.widget(cx, ids!(wide.notes_list));
         let search_height = if decision.short_chrome { 44.0 } else { 48.0 };
         let pad = if decision.short_chrome { 8.0 } else { 12.0 };
@@ -935,9 +928,10 @@ impl NotesView {
             surface.invalidate_layout();
         }
         let duration = if self.reduced_motion { 0.0 } else { 0.26 };
+        let offset = size.x + 1.0;
         for id in [live_id!(list_view), live_id!(editor_view)] {
             let mut page = self.view.widget(cx, &[live_id!(compact), id]);
-            script_apply_eval!(cx,page,{use mod.prelude.widgets.* animator +: {slide: {hide: {from:{all:Play.Forward{duration:#(duration)}}} show:{from:{all:Play.Forward{duration:#(duration)}}}}}});
+            script_apply_eval!(cx,page,{use mod.prelude.widgets.* animator +: {slide: {hide: {from:{all:Play.Forward{duration:#(duration)}} apply:{offset:#(offset)}} show:{from:{all:Play.Forward{duration:#(duration)}}}}}});
         }
         if old.family != decision.family {
             self.list(cx)
@@ -946,8 +940,6 @@ impl NotesView {
         }
         if decision.is_compact() {
             self.pending_nav = true;
-        } else if old.is_compact() {
-            self.end_interactive_pop(cx);
         }
     }
     fn apply_pending_nav(&mut self, cx: &mut Cx) {
@@ -963,7 +955,11 @@ impl NotesView {
             self.navigation_frame = cx.new_next_frame();
             return;
         }
-        let desired = stack_view_id(engine::current_screen(&self.ui));
+        let desired = match engine::current_screen(&self.ui) {
+            Screen::Folders => None,
+            Screen::List => Some(live_id!(list_view)),
+            Screen::Editor => Some(live_id!(editor_view)),
+        };
         if nav.current_view() == desired {
             self.pending_nav = false;
             return;
@@ -976,14 +972,6 @@ impl NotesView {
             None => nav.pop_to_root(cx),
         }
         self.pending_nav = false;
-    }
-    /// The stack gets no events while it's hidden or under a menu, so a swipe or back gesture
-    /// that's popping its view has to end right away.
-    fn end_interactive_pop(&mut self, cx: &mut Cx) {
-        self.view
-            .stack_navigation(cx, ids!(compact))
-            .end_interactive_pop_without_animation(cx);
-        self.revealed_screen = None;
     }
     fn fill_list(&mut self, cx: &mut Cx2d, list: &mut PortalList, uid: WidgetUid) {
         self.rendered_rows
@@ -1189,32 +1177,6 @@ impl NotesView {
         false
     }
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
-        let nav = self.view.stack_navigation(cx, ids!(compact));
-        for action in actions.filter_widget_actions_cast::<StackNavigationTransitionAction>(nav.widget_uid()) {
-            match action {
-                StackNavigationTransitionAction::InteractivePopStarted => {
-                    // We fill in the screen we'd go back to before the stack reveals it,
-                    // or refuse if there's nowhere to go back to.
-                    match self.ui.route.iter().rev().nth(1).copied() {
-                        Some(screen) => {
-                            self.revealed_screen = Some(screen);
-                            self.sync_chrome(cx);
-                            nav.set_interactive_pop_view(cx, stack_view_id(screen));
-                        }
-                        None => nav.cancel_interactive_pop(cx),
-                    }
-                }
-                // The stack finishes this pop by itself, so we only go back in our own state.
-                StackNavigationTransitionAction::InteractivePopCommitted => {
-                    self.revealed_screen = None;
-                    self.go_back(cx);
-                }
-                StackNavigationTransitionAction::InteractivePopCancelled => {
-                    self.revealed_screen = None;
-                }
-                _ => {}
-            }
-        }
         if self.activated(cx, actions, ids!(status.retry)) {
             if self.load == LoadState::Error {
                 if let Some(storage) = self.storage.clone() {
@@ -1494,13 +1456,6 @@ impl NotesView {
     }
 }
 
-fn stack_view_id(screen: Screen) -> Option<LiveId> {
-    match screen {
-        Screen::Folders => None,
-        Screen::List => Some(live_id!(list_view)),
-        Screen::Editor => Some(live_id!(editor_view)),
-    }
-}
 fn set_control_motion(widget: &WidgetRef, reduced_motion: bool) {
     if let Some(mut tap) = widget.borrow_mut::<NotesTap>() {
         tap.reduced_motion = reduced_motion;
@@ -1592,11 +1547,7 @@ impl Widget for NotesView {
             self.dismiss_overlay(cx);
             return;
         }
-        // A swipe or back gesture's pop gets this Back instead, since the system's back gesture ends with one.
-        if matches!(event, Event::BackPressed { .. })
-            && !self.view.stack_navigation(cx, ids!(compact)).has_pending_interactive_pop()
-            && event.back_pressed()
-        {
+        if matches!(event, Event::BackPressed { .. }) && event.back_pressed() {
             if self.overlay != OverlayKind::None {
                 self.dismiss_overlay(cx);
                 return;
@@ -1697,66 +1648,6 @@ impl Widget for NotesView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn create_loaded_notes() -> (Cx, WidgetRef) {
-        let mut cx = Cx::new(Box::new(|_, _| {}));
-        cx.init_cx_os();
-        let root = cx.with_vm(|vm| {
-            makepad_widgets::script_mod(vm);
-            crate::script_mod(vm);
-            let value = script_eval!(vm,{use mod.widgets.* NotesView{reduced_motion:true}});
-            WidgetRef::script_from_value(vm, value)
-        });
-        {
-            let mut view = root.borrow_mut::<NotesView>().unwrap();
-            view.started = true;
-            view.doc = seed::generate(1_788_955_200_000);
-            view.load = LoadState::Ready;
-            view.ui = engine::initial_ui(&view.doc);
-            view.refresh_projection();
-        }
-        (cx, root)
-    }
-    fn draw(cx: &mut Cx, root: &WidgetRef, size: Vec2d) {
-        let pass = DrawPass::new(cx);
-        pass.set_size(cx, size);
-        let overlay = cx.with_vm(|vm| Overlay::script_new(vm));
-        let mut list = DrawList2d::new(cx);
-        let event = DrawEvent::default();
-        let mut draw = CxDraw::new(cx, &event);
-        let mut cx2d = Cx2d::new(&mut draw);
-        cx2d.begin_pass(&pass, None);
-        list.begin_always(&mut cx2d);
-        overlay.begin(&mut cx2d);
-        cx2d.begin_root_turtle(size, Layout::flow_overlay());
-        root.draw_all(&mut cx2d, &mut Scope::empty());
-        cx2d.end_pass_sized_turtle();
-        overlay.end(&mut cx2d);
-        list.end(&mut cx2d);
-        cx2d.end_pass(&pass);
-    }
-    fn send_action(
-        cx: &mut Cx,
-        root: &WidgetRef,
-        uid: WidgetUid,
-        action: StackNavigationTransitionAction,
-    ) {
-        let actions = cx.capture_actions(|cx| cx.widget_action(uid, action));
-        root.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
-    }
-    /// Goes to the last screen of `route` on a phone, finishing its push the way the stack would.
-    fn open_compact_page(cx: &mut Cx, root: &WidgetRef, route: Vec<Screen>) -> WidgetRef {
-        let page = stack_view_id(*route.last().unwrap()).unwrap();
-        {
-            let mut view = root.borrow_mut::<NotesView>().unwrap();
-            view.ui.route = route;
-            view.pending_nav = true;
-            view.apply_pending_nav(cx);
-        }
-        let page_ref = root.stack_navigation(cx, ids!(compact)).view_by_id(cx, page);
-        page_ref.as_stack_navigation_view().show_at_rest(cx);
-        send_action(cx, root, page_ref.widget_uid(), StackNavigationTransitionAction::ShowDone);
-        page_ref
-    }
     #[test]
     fn panels_clamp_to_nonzero_host_viewports() {
         let viewport = Rect {
@@ -1782,7 +1673,40 @@ mod tests {
     }
     #[test]
     fn layout_records_occupied_columns_and_full_compact_pages_without_a_gpu() {
-        let (mut cx, root) = create_loaded_notes();
+        fn draw(cx: &mut Cx, root: &WidgetRef, size: Vec2d) {
+            let pass = DrawPass::new(cx);
+            pass.set_size(cx, size);
+            let overlay = cx.with_vm(|vm| Overlay::script_new(vm));
+            let mut list = DrawList2d::new(cx);
+            let event = DrawEvent::default();
+            let mut draw = CxDraw::new(cx, &event);
+            let mut cx2d = Cx2d::new(&mut draw);
+            cx2d.begin_pass(&pass, None);
+            list.begin_always(&mut cx2d);
+            overlay.begin(&mut cx2d);
+            cx2d.begin_root_turtle(size, Layout::flow_overlay());
+            root.draw_all(&mut cx2d, &mut Scope::empty());
+            cx2d.end_pass_sized_turtle();
+            overlay.end(&mut cx2d);
+            list.end(&mut cx2d);
+            cx2d.end_pass(&pass);
+        }
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        cx.init_cx_os();
+        let root = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::script_mod(vm);
+            let value = script_eval!(vm,{use mod.widgets.* NotesView{reduced_motion:true}});
+            WidgetRef::script_from_value(vm, value)
+        });
+        {
+            let mut view = root.borrow_mut::<NotesView>().unwrap();
+            view.started = true;
+            view.doc = seed::generate(1_788_955_200_000);
+            view.load = LoadState::Ready;
+            view.ui = engine::initial_ui(&view.doc);
+            view.refresh_projection();
+        }
         for size in [dvec2(1240.0, 800.0), dvec2(874.0, 300.0)] {
             draw(&mut cx, &root, size);
             let view = root.borrow::<NotesView>().unwrap();
@@ -1868,18 +1792,37 @@ mod tests {
                 live_id!(scroll), live_id!(group), live_id!(rows), id]);
             let row = item.area().rect(&cx);
             let rule = item.widget(&mut cx, ids!(rule)).area().rect(&cx);
-            assert_eq!(row.size.y, 56.0);
+            assert_eq!(row.size.y, 52.0);
             assert!(rule.pos.x >= row.pos.x + 52.0);
             assert!((rule.pos.y + rule.size.y - row.pos.y - row.size.y).abs() < 0.01,
                 "folder rule must follow its own row: {row:?} {rule:?}");
         }
-        for screen in [Screen::List, Screen::Editor] {
-            let route = if screen == Screen::List {
-                vec![Screen::Folders, Screen::List]
-            } else {
-                vec![Screen::Folders, Screen::List, Screen::Editor]
-            };
-            let page_ref = open_compact_page(&mut cx, &root, route);
+        for (screen, page) in [
+            (Screen::List, live_id!(list_view)),
+            (Screen::Editor, live_id!(editor_view)),
+        ] {
+            {
+                let mut view = root.borrow_mut::<NotesView>().unwrap();
+                view.ui.route = if screen == Screen::List {
+                    vec![Screen::Folders, Screen::List]
+                } else {
+                    vec![Screen::Folders, Screen::List, Screen::Editor]
+                };
+                view.pending_nav = true;
+                view.apply_pending_nav(&mut cx);
+            }
+            let nav = root.stack_navigation(&mut cx, ids!(compact));
+            let page_ref = nav.view_by_id(&mut cx, page);
+            page_ref
+                .as_stack_navigation_view()
+                .show_at_rest(&mut cx, size.x);
+            let actions = cx.capture_actions(|cx| {
+                cx.widget_action(
+                    page_ref.widget_uid(),
+                    StackNavigationTransitionAction::ShowDone,
+                )
+            });
+            root.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::empty());
             draw(&mut cx, &root, size);
             let rect = page_ref.widget(&mut cx, ids!(screen)).area().rect(&cx);
             assert_eq!(rect.pos, Vec2d::default());
@@ -1895,47 +1838,5 @@ mod tests {
                 );
             }
         }
-    }
-    #[test]
-    fn interactive_pops_go_back_a_screen_only_once_they_commit() {
-        let (mut cx, root) = create_loaded_notes();
-        let size = dvec2(402.0, 780.0);
-        draw(&mut cx, &root, size);
-        // A new note opens straight from the folders, so the list beneath it was never shown.
-        let editor_route = vec![Screen::Folders, Screen::List, Screen::Editor];
-        let editor_page = open_compact_page(&mut cx, &root, editor_route.clone());
-        draw(&mut cx, &root, size);
-        let nav = root.stack_navigation(&cx, ids!(compact));
-        let nav_uid = nav.widget_uid();
-        let send = |cx: &mut Cx, action| send_action(cx, &root, nav_uid, action);
-        let list_title = root.widget(&cx, ids!(compact.list_view.screen.title));
-        assert_eq!(list_title.text(), "");
-
-        // Letting go short of going back changes nothing.
-        send(&mut cx, StackNavigationTransitionAction::InteractivePopStarted);
-        assert_eq!(list_title.text(), "All Notes", "the list is filled in before it's revealed");
-        send(&mut cx, StackNavigationTransitionAction::InteractivePopCancelled);
-        {
-            let view = root.borrow::<NotesView>().unwrap();
-            assert_eq!(view.ui.route, editor_route);
-            assert_eq!(view.revealed_screen, None);
-            assert!(!view.pending_nav);
-        }
-        assert_eq!(nav.current_view(), Some(live_id!(editor_view)));
-        assert!(!nav.is_transitioning());
-
-        // Going back takes us to the list while the stack finishes popping there by itself,
-        // which a timed pop stands in for here.
-        send(&mut cx, StackNavigationTransitionAction::InteractivePopStarted);
-        nav.pop_to_view(&mut cx, live_id!(list_view));
-        send(&mut cx, StackNavigationTransitionAction::InteractivePopCommitted);
-        let route = root.borrow::<NotesView>().unwrap().ui.route.clone();
-        assert_eq!(route, vec![Screen::Folders, Screen::List]);
-        assert_eq!(nav.current_view(), Some(live_id!(editor_view)), "the stack is still popping");
-        let hide_end = StackNavigationTransitionAction::HideEnd(nav_uid);
-        send_action(&mut cx, &root, editor_page.widget_uid(), hide_end);
-        assert_eq!(nav.current_view(), Some(live_id!(list_view)));
-        assert!(!nav.is_transitioning(), "nothing pushes the editor back");
-        assert!(!root.borrow::<NotesView>().unwrap().pending_nav);
     }
 }

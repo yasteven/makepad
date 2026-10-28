@@ -11,7 +11,7 @@ use std::path::Path;
 
 app_main!(
     App,
-    font_assets: ["makepad_widgets/resources/jetbrains_mono_variable.ttf", MATH_VIEW_FONT_ASSET]
+    font_assets: ["makepad_widgets/resources/jetbrains_mono_variable.ttf"]
 );
 
 script_mod! {
@@ -43,7 +43,7 @@ script_mod! {
             text_style: TextStyle{
                 font_family: FontFamily{
                     latin := FontMember{
-                        res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                        res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                         asc: 0.0
                         desc: 0.0
                         weight: 400.0
@@ -257,7 +257,7 @@ script_mod! {
                 /** the icon's box, smaller than the button default */
                 icon_walk: Walk{/** icon width in pixels 8..64 step 1 */ width: 16 /** icon height in pixels 8..64 step 1 */ height: 16}
                 draw_icon.color: /** icon tint */ #fff
-                draw_icon.svg: crate_resource("self:../../widgets/resources/icons/icon_file.svg")
+                draw_icon.svg: crate_resource("makepad_widgets:resources/icons/icon_file.svg")
             }
 
             Hr{}
@@ -290,17 +290,17 @@ script_mod! {
             Label{text: "Bare Icons (with optional rotation)" draw_text.color: #888 draw_text.text_style.font_size: 10}
             View{width: Fill height: Fit flow: Right spacing: 15}
             Icon{
-                draw_icon.svg: crate_resource("self:../../widgets/resources/icons/icon_file.svg")
+                draw_icon.svg: crate_resource("makepad_widgets:resources/icons/icon_file.svg")
                 draw_icon.color: #0ff
                 icon_walk: Walk{width: 32 height: 32}
             }
             Icon{
-                draw_icon.svg: crate_resource("self:../../widgets/resources/icons/icon_select.svg")
+                draw_icon.svg: crate_resource("makepad_widgets:resources/icons/icon_select.svg")
                 draw_icon.color: #f80
                 icon_walk: Walk{width: 32 height: 32}
             }
             IconRotated {
-                draw_icon.svg: crate_resource("self:../../widgets/resources/icons/icon_select.svg")
+                draw_icon.svg: crate_resource("makepad_widgets:resources/icons/icon_select.svg")
                 // draw_icon.svg: crate_resource("self:resources/app_icon.svg")
                 draw_icon.color: #f80
                 draw_icon.rotation_angle: 99.0
@@ -801,7 +801,7 @@ script_mod! {
                     text_style: TextStyle{
                         font_family: FontFamily{
                             latin := FontMember{
-                                res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                                res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                                 asc: 0.0
                                 desc: 0.0
                                 weight: 200.0
@@ -821,7 +821,7 @@ script_mod! {
                     text_style: TextStyle{
                         font_family: FontFamily{
                             latin := FontMember{
-                                res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                                res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                                 asc: 0.0
                                 desc: 0.0
                                 weight: 400.0
@@ -841,7 +841,7 @@ script_mod! {
                     text_style: TextStyle{
                         font_family: FontFamily{
                             latin := FontMember{
-                                res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                                res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                                 asc: 0.0
                                 desc: 0.0
                                 weight: 700.0
@@ -861,7 +861,7 @@ script_mod! {
                     text_style: TextStyle{
                         font_family: FontFamily{
                             latin := FontMember{
-                                res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                                res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                                 asc: 0.0
                                 desc: 0.0
                                 weight: 900.0
@@ -885,7 +885,7 @@ script_mod! {
                     text_style: TextStyle{
                         font_family: FontFamily{
                             latin := FontMember{
-                                res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                                res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                                 asc: 0.0
                                 desc: 0.0
                                 weight: 200.0
@@ -905,7 +905,7 @@ script_mod! {
                     text_style: TextStyle{
                         font_family: FontFamily{
                             latin := FontMember{
-                                res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                                res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                                 asc: 0.0
                                 desc: 0.0
                                 weight: 400.0
@@ -925,7 +925,7 @@ script_mod! {
                     text_style: TextStyle{
                         font_family: FontFamily{
                             latin := FontMember{
-                                res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                                res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                                 asc: 0.0
                                 desc: 0.0
                                 weight: 700.0
@@ -945,7 +945,7 @@ script_mod! {
                     text_style: TextStyle{
                         font_family: FontFamily{
                             latin := FontMember{
-                                res: crate_resource("self:../../widgets/resources/jetbrains_mono_variable.ttf")
+                                res: crate_resource("makepad_widgets:resources/jetbrains_mono_variable.ttf")
                                 asc: 0.0
                                 desc: 0.0
                                 weight: 900.0
@@ -1491,15 +1491,15 @@ script_mod! {
             View{width: Fill height: Fit flow: Right spacing: 15 align: Align{y: 0.5}}
             Svg{
                 width: 32 height: 32
-                draw_svg +: { svg: crate_resource("self:../../widgets/resources/icons/icon_file.svg") }
+                draw_svg +: { svg: crate_resource("makepad_widgets:resources/icons/icon_file.svg") }
             }
             Svg{
                 width: 32 height: 32
-                draw_svg +: { svg: crate_resource("self:../../widgets/resources/icons/icon_folder.svg") }
+                draw_svg +: { svg: crate_resource("makepad_widgets:resources/icons/icon_folder.svg") }
             }
             Svg{
                 width: 32 height: 32
-                draw_svg +: { svg: crate_resource("self:../../widgets/resources/icons/icon_select.svg") }
+                draw_svg +: { svg: crate_resource("makepad_widgets:resources/icons/icon_select.svg") }
             }
 
             Hr{}
@@ -2224,8 +2224,8 @@ impl MatchEvent for App {
                 callout_tooltip_button.area().rect(cx),
                 CalloutTooltipOptions {
                     position: TooltipPosition::Right,
-                    text_color: Some(vec4(1.0, 0.0, 0.0, 1.0)), // red
-                    bg_color: Some(vec4(0.0, 1.0, 0.0, 1.0)), // green
+                    text_color: vec4(1.0, 0.0, 0.0, 1.0), // red
+                    bg_color: vec4(0.0, 1.0, 0.0, 1.0), // green
                     ..Default::default()
                 }
             );

@@ -1,15 +1,15 @@
 //! Opt-in presentation timeline. Producers only publish atomics and try_send;
 //! the diagnostic worker aggregates at 1 Hz, with no paint clock of its own.
-use std::{
-    collections::VecDeque,
-    fmt::Write,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc::{self, SyncSender},
-        Arc, OnceLock,
-    },
-    time::{Duration, Instant},
-};
+use std::collections::VecDeque;
+use std::fmt::Write;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::sync::mpsc::SyncSender;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use crate::sols_browser_time::Duration;
+use crate::sols_browser_time::Instant;
 
 #[derive(Clone, Copy)]
 #[repr(usize)]

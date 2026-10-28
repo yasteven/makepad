@@ -68,11 +68,6 @@ pub struct CxScriptResources {
     /// [`CxScriptResource::handles`]).
     pub handles_by_abs_path: Rc<RefCell<HashMap<(usize, String), ScriptHandle>>>,
     pub http_resources: Vec<CxScriptHttpResource>,
-    /// Bumped whenever a resource is registered or its load state moves
-    /// (a load attempted, an HTTP response or error). A consumer that
-    /// caches a negative answer ("this resource cannot be read") keys it on
-    /// this, so a resource that appears later is asked for again.
-    pub generation: std::cell::Cell<u64>,
 }
 
 impl CxScriptResources {
@@ -118,12 +113,6 @@ impl CxScriptResources {
             resource.handles[0].1,
         );
         self.resources.borrow_mut().push(resource);
-        self.bump_generation();
-    }
-
-    /// See [`Self::generation`].
-    pub fn bump_generation(&self) {
-        self.generation.set(self.generation.get().wrapping_add(1));
     }
 
     /// Attach an additional heap's local handle to an existing resource entry
@@ -169,7 +158,6 @@ impl CxScriptResources {
             let mut resources = self.resources.borrow_mut();
             if let Some(res) = resources.iter_mut().find(|r| r.abs_path == path) {
                 res.data = CxScriptResourceData::Loaded(Rc::new(data));
-                self.bump_generation();
                 return true;
             }
         }
@@ -188,7 +176,6 @@ impl CxScriptResources {
             let mut resources = self.resources.borrow_mut();
             if let Some(res) = resources.iter_mut().find(|r| r.abs_path == path) {
                 res.data = CxScriptResourceData::Error(error);
-                self.bump_generation();
                 return true;
             }
         }
@@ -399,8 +386,6 @@ impl Cx {
             if !matches!(res.data, CxScriptResourceData::NotLoaded) {
                 return;
             }
-            // Every path below leaves NotLoaded (Loaded, Loading or Error).
-            self.script_data.resources.bump_generation();
 
             #[cfg(target_arch = "wasm32")]
             if res.dependency_path.is_none() {
@@ -476,11 +461,7 @@ impl Cx {
                 .resources
                 .http_resources
                 .push(CxScriptHttpResource { request_id, abs_path: path.to_string() });
-            // This fetches the app's own package file, which a restricted isolate's draw can need too,
-            // so it skips the guard that `http_request` applies to guest requests.
-            if let Err(err) = self.net.http_start(request_id, HttpRequest::new(url, Default::default())) {
-                crate::error!("http_request failed for {}: {}", request_id.0, err);
-            }
+            self.http_request(request_id, HttpRequest::new(url, Default::default()));
         }
     }
 
@@ -1016,9 +997,6 @@ pub fn script_mod(vm: &mut ScriptVm) {
         id_lut!(load_all_resources),
         script_args_def!(value = NIL),
         move |vm, args| {
-            if vm.host.cx_mut().script_data.std.host_io_only() {
-                return script_err_io!(vm.trap(), "external resources require a host request");
-            }
             let value = script_value!(vm, args.value);
             let cx = vm.host.cx_mut();
             cx.load_all_script_resources();
@@ -1033,9 +1011,6 @@ pub fn script_mod(vm: &mut ScriptVm) {
         id_lut!(file_resource),
         script_args_def!(path = NIL),
         move |vm, args| {
-            if vm.host.cx_mut().script_data.std.host_io_only() {
-                return script_err_io!(vm.trap(), "external resources require a host request");
-            }
             let path = script_value!(vm, args.path);
             if !path.is_string_like() {
                 return script_err_type_mismatch!(vm.trap(), "invalid res arg type");
@@ -1095,9 +1070,6 @@ pub fn script_mod(vm: &mut ScriptVm) {
         id_lut!(crate_resource),
         script_args_def!(path = NIL),
         move |vm, args| {
-            if vm.host.cx_mut().script_data.std.host_io_only() {
-                return script_err_io!(vm.trap(), "external resources require a host request");
-            }
             let path = script_value!(vm, args.path);
             if !path.is_string_like() {
                 return script_err_type_mismatch!(vm.trap(), "invalid res arg type");
@@ -1122,9 +1094,6 @@ pub fn script_mod(vm: &mut ScriptVm) {
         id_lut!(http_resource),
         script_args_def!(url = NIL),
         move |vm, args| {
-            if vm.host.cx_mut().script_data.std.host_io_only() {
-                return script_err_io!(vm.trap(), "external resources require a host request");
-            }
             let url = script_value!(vm, args.url);
             if !url.is_string_like() {
                 return script_err_type_mismatch!(vm.trap(), "invalid res arg type");

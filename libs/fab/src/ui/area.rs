@@ -292,8 +292,7 @@ impl Widget for FabArea {
                 self.grip_from = Some(fd.abs);
             }
             if let Some(fu) = grip.finger_up(actions) {
-                // A press taken away joins or splits nothing.
-                if let Some(from) = self.grip_from.take().filter(|_| !fu.cancelled) {
+                if let Some(from) = self.grip_from.take() {
                     let d = fu.abs - from;
                     if d.x.abs() > 12.0 || d.y.abs() > 12.0 {
                         let inward = d.x < 0.0 && d.y < 0.0;

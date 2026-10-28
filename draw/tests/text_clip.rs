@@ -51,9 +51,9 @@ fn render(scene: Scene, directory: &Path) -> Vec<u8> {
                 makepad_platform::script::script_mod(vm);
                 makepad_draw::script_mod(vm);
                 let font = if matches!(scene.glyph_path, GlyphPath::Emoji) {
-                    "self:../../widgets/resources/NotoColorEmoji.ttf"
+                    "makepad_widgets:resources/NotoColorEmoji.ttf"
                 } else {
-                    "self:../../widgets/resources/IBMPlexSans-Text.ttf"
+                    "makepad_widgets:resources/IBMPlexSans-Text.ttf"
                 };
                 let source = script! {
                     use mod.draw.*

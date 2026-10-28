@@ -289,13 +289,9 @@ impl<'a, C: Cursor> Dfa<'a, C> {
             + mem::size_of::<StatePtr>()
             + key.bytes.len();
         let state = self.states.add(key.clone());
-        if self.prog.has_word_boundary && !self.prog.ascii_word_boundary {
-            // A Unicode word boundary next to a non-ASCII byte hands the
-            // input to the NFA. The table is indexed by byte class, and the
-            // compiler keeps bytes at or above 0x80 in classes of their own.
+        if self.prog.has_word_boundary {
             for b in 128..256 {
-                let class = self.prog.byte_classes[b] as u16;
-                *self.states.next_state_mut(state, class) = ERROR_STATE;
+                *self.states.next_state_mut(state, b) = ERROR_STATE;
             }
         }
         self.state_cache.insert(key, state);

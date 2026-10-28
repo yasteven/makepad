@@ -11,7 +11,8 @@ use {
             apple::apple_sys::*,
             apple_classes::get_apple_class_global,
             apple_util::{
-                get_event_key_modifier, get_event_mouse_button, nsstring_to_string, str_to_nsstring, superclass,
+                get_event_key_modifier, get_event_mouse_button, load_mouse_cursor,
+                nsstring_to_string, superclass,
             },
             cx_native::EventFlow,
             macos::{
@@ -57,27 +58,6 @@ pub fn define_titlebar_container_class() -> *const Class {
         );
     }
     decl.register()
-}
-
-/// Does what the user chose in System Settings for a double-click on a window's title bar.
-unsafe fn perform_title_bar_double_click_action(window: ObjcId) {
-    let defaults: ObjcId = msg_send![class!(NSUserDefaults), standardUserDefaults];
-    let action: ObjcId = msg_send![defaults, stringForKey: str_to_nsstring("AppleActionOnDoubleClick")];
-    let action = if action == nil { String::new() } else { nsstring_to_string(action) };
-    // "Fill" has no public API, so we use the Window menu's own Fill action, if it's there.
-    let can_fill: bool = msg_send![window, respondsToSelector: sel!(_zoomFill:)];
-    match action.as_str() {
-        "None" => {}
-        "Minimize" => {
-            let () = msg_send![window, performMiniaturize: nil];
-        }
-        "Fill" if can_fill => {
-            let () = msg_send![window, _zoomFill: nil];
-        }
-        _ => {
-            let () = msg_send![window, performZoom: nil];
-        }
-    }
 }
 
 pub fn define_macos_timer_delegate() -> *const Class {
@@ -283,8 +263,8 @@ pub fn define_macos_window_delegate() -> *const Class {
     }
 
     extern "C" fn window_did_resize(this: &Object, _: Sel, _: ObjcId) {
-        let cw = get_cocoa_window(this);
-        cw.handle_titlebar_relayout();
+        let _cw = get_cocoa_window(this);
+        //cw.send_change_event();
     }
 
     extern "C" fn window_will_start_live_resize(this: &Object, _: Sel, _: ObjcId) {
@@ -311,7 +291,6 @@ pub fn define_macos_window_delegate() -> *const Class {
     // This will always be called before `window_did_change_screen`.
     extern "C" fn window_did_change_backing_properties(this: &Object, _: Sel, _: ObjcId) {
         let cw = get_cocoa_window(this);
-        cw.position_window_buttons();
         cw.send_change_event();
     }
 
@@ -325,7 +304,6 @@ pub fn define_macos_window_delegate() -> *const Class {
             }
         });
         let cw = get_cocoa_window(this);
-        cw.handle_titlebar_relayout();
         cw.send_got_focus_event();
     }
 
@@ -339,12 +317,7 @@ pub fn define_macos_window_delegate() -> *const Class {
             }
         });
         let cw = get_cocoa_window(this);
-        cw.handle_titlebar_relayout();
         cw.send_lost_focus_event();
-    }
-
-    extern "C" fn window_did_miniaturize_change(_this: &Object, _: Sel, _: ObjcId) {
-        MacosApp::do_callback(MacosEvent::WindowMiniaturizeChange);
     }
 
     // Invoked when the dragged image enters destination bounds or frame
@@ -390,35 +363,17 @@ pub fn define_macos_window_delegate() -> *const Class {
     extern "C" fn window_will_exit_fullscreen(this: &Object, _: Sel, _: ObjcId) {
         let cw = get_cocoa_window(this);
         cw.is_fullscreen = false;
-        cw.is_exiting_fullscreen = true;
-        // AppKit keeps the traffic lights in its own spot until it's done animating,
-        // so we hide them until we can move them for the zoomed UI.
-        if cw.get_window_buttons_zoom() > 1.0 {
-            cw.set_titlebar_visible(false);
-        }
         cw.send_change_event();
     }
 
     extern "C" fn window_did_exit_fullscreen(this: &Object, _: Sel, _: ObjcId) {
         let cw = get_cocoa_window(this);
-        cw.is_exiting_fullscreen = false;
-        cw.position_window_buttons();
-        cw.set_titlebar_visible(true);
         cw.send_change_event();
     }
 
     extern "C" fn window_did_fail_to_enter_fullscreen(this: &Object, _: Sel, _: ObjcId) {
         let cw = get_cocoa_window(this);
         cw.is_fullscreen = false;
-        cw.position_window_buttons();
-        cw.send_change_event();
-    }
-
-    extern "C" fn window_did_fail_to_exit_fullscreen(this: &Object, _: Sel, _: ObjcId) {
-        let cw = get_cocoa_window(this);
-        cw.is_fullscreen = true;
-        cw.is_exiting_fullscreen = false;
-        cw.set_titlebar_visible(true);
         cw.send_change_event();
     }
 
@@ -468,14 +423,6 @@ pub fn define_macos_window_delegate() -> *const Class {
             sel!(windowDidResignKey:),
             window_did_resign_key as extern "C" fn(&Object, Sel, ObjcId),
         );
-        decl.add_method(
-            sel!(windowDidMiniaturize:),
-            window_did_miniaturize_change as extern "C" fn(&Object, Sel, ObjcId),
-        );
-        decl.add_method(
-            sel!(windowDidDeminiaturize:),
-            window_did_miniaturize_change as extern "C" fn(&Object, Sel, ObjcId),
-        );
 
         // callbacks for drag and drop events
         decl.add_method(
@@ -519,10 +466,6 @@ pub fn define_macos_window_delegate() -> *const Class {
         decl.add_method(
             sel!(windowDidFailToEnterFullScreen:),
             window_did_fail_to_enter_fullscreen as extern "C" fn(&Object, Sel, ObjcId),
-        );
-        decl.add_method(
-            sel!(windowDidFailToExitFullScreen:),
-            window_did_fail_to_exit_fullscreen as extern "C" fn(&Object, Sel, ObjcId),
         );
         // custom timer fn
         //decl.add_method(sel!(windowReceivedTimer:), window_received_timer as extern fn(&Object, Sel, id));
@@ -624,40 +567,12 @@ pub fn define_cocoa_view_class() -> *const Class {
         let cw = get_cocoa_window(this);
         unsafe {
             if cw.mouse_down_can_drag_window() {
-                // AppKit doesn't handle our title bar (see `opaque_rect_for_window_move_when_in_titlebar`),
-                // so we do its double-click too.
-                let click_count: isize = msg_send![event, clickCount];
-                if click_count == 2 {
-                    perform_title_bar_double_click_action(cw.window);
-                } else {
-                    let () = msg_send![cw.window, performWindowDragWithEvent: event];
-                }
+                let () = msg_send![cw.window, performWindowDragWithEvent: event];
                 return;
             }
         }
         let modifiers = get_event_key_modifier(event);
         cw.send_mouse_down(MouseButton::PRIMARY, modifiers);
-    }
-
-    // AppKit moves the window from a drag on any part of its title bar that no view claims (like `NSControl` does),
-    // even on a control the app put there. So our view claims all of it, and only the app's `WindowDragQuery` moves it.
-    extern "C" fn opaque_rect_for_window_move_when_in_titlebar(this: &Object, _sel: Sel) -> NSRect {
-        unsafe { msg_send![this, bounds] }
-    }
-
-    // Older macOS versions may only ask this, rather than the above, before moving the window.
-    extern "C" fn mouse_down_can_move_window(_this: &Object, _sel: Sel) -> BOOL {
-        NO
-    }
-
-    // Like AppKit's own title bar, a press on an inactive window's caption bar drags it right away.
-    extern "C" fn accepts_first_mouse(this: &Object, _sel: Sel, event: ObjcId) -> BOOL {
-        if event == nil {
-            return NO;
-        }
-        let cw = get_cocoa_window(this);
-        cw.last_mouse_pos = mouse_pos_from_event(this, event);
-        if cw.mouse_down_can_drag_window() { YES } else { NO }
     }
 
     extern "C" fn mouse_up(this: &Object, _sel: Sel, event: ObjcId) {
@@ -787,7 +702,15 @@ pub fn define_cocoa_view_class() -> *const Class {
         // object we do not own — the cache holds retained ids for that reason.
         let call = std::panic::AssertUnwindSafe(|| unsafe {
             let Some(current_cursor) = try_with_macos_app(|app| app.current_cursor.clone()) else { return };
-            let Some(cursor_id) = try_with_macos_app(|app| app.native_cursor(current_cursor.clone())) else { return };
+            let Some(cursor_id) = try_with_macos_app(|app| {
+                *app.cursors.entry(current_cursor.clone()).or_insert_with(|| {
+                    let id = load_mouse_cursor(current_cursor.clone());
+                    if !id.is_null() {
+                        let _: ObjcId = msg_send![id, retain];
+                    }
+                    id
+                })
+            }) else { return };
             if cursor_id.is_null() {
                 return;
             }
@@ -1046,14 +969,6 @@ pub fn define_cocoa_view_class() -> *const Class {
     extern "C" fn display_layer(this: &Object, _: Sel, _calayer: ObjcId) {
         let cw = get_cocoa_window(this);
         cw.send_change_event();
-    }
-
-    // Switching between light and dark mode re-lays out the titlebar.
-    extern "C" fn view_did_change_effective_appearance(this: &Object, _: Sel) {
-        unsafe {
-            let () = msg_send![super(this, superclass(this)), viewDidChangeEffectiveAppearance];
-        }
-        get_cocoa_window(this).handle_titlebar_relayout();
     }
 
     extern "C" fn dragging_session_ended_at_point_operation(
@@ -1344,18 +1259,6 @@ pub fn define_cocoa_view_class() -> *const Class {
             mouse_down as extern "C" fn(&Object, Sel, ObjcId),
         );
         decl.add_method(
-            sel!(_opaqueRectForWindowMoveWhenInTitlebar),
-            opaque_rect_for_window_move_when_in_titlebar as extern "C" fn(&Object, Sel) -> NSRect,
-        );
-        decl.add_method(
-            sel!(mouseDownCanMoveWindow),
-            mouse_down_can_move_window as extern "C" fn(&Object, Sel) -> BOOL,
-        );
-        decl.add_method(
-            sel!(acceptsFirstMouse:),
-            accepts_first_mouse as extern "C" fn(&Object, Sel, ObjcId) -> BOOL,
-        );
-        decl.add_method(
             sel!(mouseUp:),
             mouse_up as extern "C" fn(&Object, Sel, ObjcId),
         );
@@ -1415,10 +1318,6 @@ pub fn define_cocoa_view_class() -> *const Class {
         decl.add_method(
             sel!(displayLayer:),
             display_layer as extern "C" fn(&Object, Sel, ObjcId),
-        );
-        decl.add_method(
-            sel!(viewDidChangeEffectiveAppearance),
-            view_did_change_effective_appearance as extern "C" fn(&Object, Sel),
         );
 
         #[cfg(target_os = "macos")]

@@ -529,15 +529,20 @@ pub fn define_mtk_view() -> *const Class {
         IosApp::send_clipboard_action("select_all");
     }
 
-    fn on_touch(this: &Object, touches: ObjcId, state: TouchState) {
+    fn on_touch(this: &Object, event: ObjcId, state: TouchState) {
         unsafe {
-            let size: u64 = msg_send![touches, count];
-            let enumerator: ObjcId = msg_send![touches, objectEnumerator];
+            let enumerator: ObjcId = msg_send![event, allTouches];
+            let size: u64 = msg_send![enumerator, count];
+            let enumerator: ObjcId = msg_send![enumerator, objectEnumerator];
 
-            for _ in 0..size {
+            for touch_id in 0..size {
                 let ios_touch: ObjcId = msg_send![enumerator, nextObject];
-                // UIKit keeps each UITouch alive throughout its gesture; NSSet order is not stable.
-                let uid = ios_touch as usize as u64;
+                let uid_obj: ObjcId = msg_send![ios_touch, estimationUpdateIndex];
+                let uid: u64 = if uid_obj != nil {
+                    msg_send![uid_obj, intValue]
+                } else {
+                    touch_id as u64
+                };
                 let p: NSPoint = msg_send![ios_touch, locationInView: this];
 
                 // Get touch radius and force from UITouch
@@ -558,24 +563,24 @@ pub fn define_mtk_view() -> *const Class {
         }
     }
 
-    extern "C" fn touches_began(this: &Object, _: Sel, touches: ObjcId, _: ObjcId) {
-        on_touch(this, touches, TouchState::Start);
+    extern "C" fn touches_began(this: &Object, _: Sel, _: ObjcId, event: ObjcId) {
+        on_touch(this, event, TouchState::Start);
         IosApp::send_touch_update();
     }
 
-    extern "C" fn touches_moved(this: &Object, _: Sel, touches: ObjcId, _: ObjcId) {
-        on_touch(this, touches, TouchState::Move);
+    extern "C" fn touches_moved(this: &Object, _: Sel, _: ObjcId, event: ObjcId) {
+        on_touch(this, event, TouchState::Move);
         IosApp::send_touch_update();
     }
 
-    extern "C" fn touches_ended(this: &Object, _: Sel, touches: ObjcId, _: ObjcId) {
-        on_touch(this, touches, TouchState::Stop);
+    extern "C" fn touches_ended(this: &Object, _: Sel, _: ObjcId, event: ObjcId) {
+        on_touch(this, event, TouchState::Stop);
         IosApp::send_touch_update();
     }
 
-    extern "C" fn touches_canceled(this: &Object, _: Sel, touches: ObjcId, _: ObjcId) {
-        on_touch(this, touches, TouchState::Stop);
-        IosApp::send_touch_cancel();
+    extern "C" fn touches_canceled(this: &Object, _: Sel, _: ObjcId, event: ObjcId) {
+        on_touch(this, event, TouchState::Stop);
+        IosApp::send_touch_update();
     }
 
     // Hardware-keyboard shortcuts, handled app-wide like desktop (MakepadView is
@@ -627,7 +632,7 @@ pub fn define_mtk_view() -> *const Class {
             touches_ended as extern "C" fn(&Object, Sel, ObjcId, ObjcId),
         );
         decl.add_method(
-            sel!(touchesCancelled: withEvent:),
+            sel!(touchesCanceled: withEvent:),
             touches_canceled as extern "C" fn(&Object, Sel, ObjcId, ObjcId),
         );
 
@@ -732,7 +737,11 @@ pub fn define_gesture_recognizer_handler() -> *const Class {
                 // UIGestureRecognizerStateBegan
                 let view: ObjcId = msg_send![gesture_recognizer, view];
                 let location_in_view: NSPoint = msg_send![gesture_recognizer, locationInView: view];
-                IosApp::send_long_press(location_in_view);
+                // There's no way to get the touch event's UID from within a default gesture recognizer
+                // (we'd have to fully implement our own). Since UID isn't used for long presses,
+                // this isn't worth the effort.
+                let uid = 0;
+                IosApp::send_long_press(location_in_view, uid);
             }
             // Note: in `did_finish_launching_with_options()`, we set gesture recognizer's `cancelTouchesInView` property
             // to `NO`, which means that the gesture recognizer will still allow Makepad's MTKView

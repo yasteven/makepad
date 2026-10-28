@@ -214,19 +214,12 @@ mod tests {
             );
         }
 
-        // Focus selection is independent of the head's view cone. With
-        // smaller mesh chunks, nearby floor chunks can be outside that cone.
-        let smaller_plan = debug_depth_mesh_focus_cube_plan(&snapshot, focus_center, 0.1);
+        let head_plan =
+            debug_depth_mesh_view_plan(&snapshot, Pose::new(Quat::default(), vec3f(0.0, 1.4, 0.0)));
         assert!(
-            smaller_plan.visible_chunks.len() < focus_plan.visible_chunks.len(),
-            "a smaller focus cube should exclude chunks from the wider focus volume"
+            focus_plan.visible_chunks.len() <= head_plan.visible_chunks.len(),
+            "focus cube mode should not expand the visible chunk set beyond the head-view plan"
         );
-        for chunk in &smaller_plan.visible_chunks {
-            assert!(focus_plan
-                .visible_chunks
-                .iter()
-                .any(|wider| wider.chunk_key == chunk.chunk_key));
-        }
     }
 
     #[test]
