@@ -1552,6 +1552,33 @@ public class MakepadActivity
     //
     // kind: 0 = ACTION_OPEN_DOCUMENT, 1 = ACTION_CREATE_DOCUMENT,
     //       2 = ACTION_OPEN_DOCUMENT_TREE.
+    // Called only by the native heavy worker, after a user grants SAF access.
+    // Never infer a filesystem path or allocate based on provider metadata.
+    public byte[] readDocumentBytes(String uriText, long maxBytes) {
+        if (maxBytes < 0 || maxBytes > Integer.MAX_VALUE - 8) return null;
+        Uri uri = Uri.parse(uriText);
+        if (!"content".equals(uri.getScheme())) return null;
+        try (java.io.InputStream input = getContentResolver().openInputStream(uri);
+             java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+            if (input == null) return null;
+            byte[] buffer = new byte[8192];
+            long total = 0;
+            for (;;) {
+                // Read at most one byte past the cap to detect an oversized file.
+                int wanted = (int)Math.min(buffer.length, maxBytes - total + 1);
+                int count = input.read(buffer, 0, wanted);
+                if (count < 0) return output.toByteArray();
+                if (count == 0) continue;
+                total += count;
+                if (total > maxBytes) return null;
+                output.write(buffer, 0, count);
+            }
+        } catch (Exception error) {
+            Log.w(LOG_TAG, "Selected document could not be read within its byte limit");
+            return null;
+        }
+    }
+
     public void openFileDialog(
         final int requestCode,
         final int kind,
@@ -2205,6 +2232,17 @@ public class MakepadActivity
                 }
             }
         });
+    }
+
+    public void requestDeviceService(final long requestId, final int operation, final String text) {
+        if (operation == 2) {
+            // The framework request budget bounds these jobs; use a shared pool,
+            // not a new thread, for potentially blocking connectivity queries.
+            java.util.concurrent.CompletableFuture.runAsync(
+                () -> MakepadDeviceServices.perform(this, requestId, operation, text));
+        } else {
+            runOnUiThread(() -> MakepadDeviceServices.perform(this, requestId, operation, text));
+        }
     }
 
     public void copyToClipboard(String content) {

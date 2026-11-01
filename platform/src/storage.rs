@@ -982,8 +982,8 @@ pub(crate) mod native {
     #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     mod tests {
         use super::*;
-        use crate::sols_browser_time::SystemTime;
-use crate::sols_browser_time::UNIX_EPOCH;
+        use crate::browser_time::SystemTime;
+use crate::browser_time::UNIX_EPOCH;
 
         struct TempDir(PathBuf);
 

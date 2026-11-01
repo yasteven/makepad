@@ -21,7 +21,7 @@ pub fn retained_upload_limit() -> usize {
     #[cfg(target_arch = "wasm32")]
     let start = crate::Cx::monotonic_now();
     #[cfg(not(target_arch = "wasm32"))]
-    let start = crate::sols_browser_time::Instant::now();
+    let start = crate::browser_time::Instant::now();
     destination.copy_from_slice(std::hint::black_box(&source));
     std::hint::black_box(&destination);
     #[cfg(target_arch = "wasm32")]
@@ -1114,7 +1114,7 @@ mod upload_tests {
         {
             budget.begin_frame(frames);
             let bytes = publication.byte_len();
-            let start = crate::sols_browser_time::Instant::now();
+            let start = crate::browser_time::Instant::now();
             copied.copy_from_slice(publication.data());
             budget.copied(bytes, 64, start.elapsed());
             budget.begin_frame(frames);

@@ -650,7 +650,7 @@ impl Cx {
                         // What this copy costs feeds the producers' pacing
                         // (contract §8): summed per frame, recorded at the
                         // pass's end.
-                        let copy_started = crate::sols_browser_time::Instant::now();
+                        let copy_started = crate::browser_time::Instant::now();
                         let uploaded = if let Some(retained) = &draw_item.retained_instances {
                             let Some(uploaded) =
                                 draw_item.os.inst_vb.update_retained_array(

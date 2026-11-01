@@ -1126,6 +1126,7 @@ fn compile_java(
         r_class_path.clone(),
         makepad_java_classes_dir.join("MakepadNative.java"),
         makepad_java_classes_dir.join("MakepadActivity.java"),
+        makepad_java_classes_dir.join("MakepadDeviceServices.java"),
         makepad_java_classes_dir.join("MakepadInputConnection.java"),
         makepad_java_classes_dir.join("MakepadNetwork.java"),
         makepad_java_classes_dir.join("MakepadSpeech.java"),

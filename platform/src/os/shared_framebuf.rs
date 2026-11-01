@@ -538,8 +538,8 @@ use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::thread;
-use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Duration;
+use crate::browser_time::Instant;
 
     // HACK(eddyb) `io::Error::other` stabilization is too recent.
     fn io_error_other(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {

@@ -11,7 +11,7 @@ use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, Once, OnceLock};
-use crate::sols_browser_time::Duration;
+use crate::browser_time::Duration;
 
 struct PendingHttp {
     public_request_id: LiveId,

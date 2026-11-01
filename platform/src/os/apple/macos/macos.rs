@@ -1128,10 +1128,10 @@ impl Cx {
                     // deferred the NSTimer) or a SLOW CALLBACK (our work)?
                     let trace_t0 = if crate::makepad_error_log::trace_enabled("timer") {
                         thread_local! {
-                            static LAST_FIRE: std::cell::Cell<Option<crate::sols_browser_time::Instant>> =
+                            static LAST_FIRE: std::cell::Cell<Option<crate::browser_time::Instant>> =
                                 const { std::cell::Cell::new(None) };
                         }
-                        let now = crate::sols_browser_time::Instant::now();
+                        let now = crate::browser_time::Instant::now();
                         LAST_FIRE.with(|last| {
                             if let Some(prev) = last.replace(Some(now)) {
                                 let gap_ms = prev.elapsed().as_secs_f64() * 1000.0;
@@ -1212,16 +1212,16 @@ impl Cx {
                             self.os.timer0_idle_since = Some(now);
                         }
                     }
-                    let step_t = trace_t0.map(|_| crate::sols_browser_time::Instant::now());
+                    let step_t = trace_t0.map(|_| crate::browser_time::Instant::now());
                     self.run_live_edit_if_needed("macos");
                     let live_edit_ms = step_t.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                    let step_t = trace_t0.map(|_| crate::sols_browser_time::Instant::now());
+                    let step_t = trace_t0.map(|_| crate::browser_time::Instant::now());
                     self.handle_networking_events();
                     let net_ms = step_t.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                    let step_t = trace_t0.map(|_| crate::sols_browser_time::Instant::now());
+                    let step_t = trace_t0.map(|_| crate::browser_time::Instant::now());
                     self.handle_gamepad_events();
                     let pad_ms = step_t.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                    let paint_t = trace_t0.map(|_| crate::sols_browser_time::Instant::now());
+                    let paint_t = trace_t0.map(|_| crate::browser_time::Instant::now());
                     // Propagate Exit from the inner Paint dispatch. The
                     // signal handling above (Ctrl+C / SIGTERM) calls
                     // `request_quit`, which queues a `CxOsOp::Quit`; that op
@@ -1242,7 +1242,7 @@ impl Cx {
                     let paint_ms = paint_t.map(|t| t.elapsed().as_secs_f64() * 1000.0);
 
                     // Run garbage collection if needed - safe moment after paint, before waiting
-                    let gc_t0 = crate::sols_browser_time::Instant::now();
+                    let gc_t0 = crate::browser_time::Instant::now();
                     let mut did_gc = false;
                     self.with_vm(|vm| {
                         if vm.heap().needs_gc() {

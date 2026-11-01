@@ -49,6 +49,8 @@ pub mod mp4_first_frame;
 pub mod nv12;
 pub mod stream_debug;
 pub mod stream_decoder;
+#[cfg(target_os = "android")]
+mod android_stream_decoder;
 pub mod stream_encoder;
 
 pub use stream_decoder::{DecodedFrame, VideoStreamDecoder};

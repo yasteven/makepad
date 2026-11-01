@@ -26,7 +26,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::TryRecvError;
 use std::sync::Mutex;
-use crate::sols_browser_time::Duration;
+use crate::browser_time::Duration;
 
 pub type WebSocket = u64;
 

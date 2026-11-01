@@ -1,4 +1,4 @@
-// Tests the shared fork's actual helpers without building SOLS, Trade or WASM.
+// Tests the shared fork's actual helpers without building an application or WASM.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync} from 'node:fs';
@@ -8,12 +8,12 @@ import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const read = p => readFileSync(join(root, p), 'utf8');
-const widgets = ['widgets/src', 'widgets/core/src'].filter(p => existsSync(join(root,p,'trade_input_keyboard.rs')));
+const widgets = ['widgets/src', 'widgets/core/src'].filter(p => existsSync(join(root,p,'input_keyboard.rs')));
 assert.equal(widgets.length, 1);
 
 function rust(t, name, text, expected) {
   if (process.env.MAKEPAD_COMPLETION_SKIP_RUSTC === '1') {
-    t.skip('Rust compiler unavailable in preparation environment; required on seejn');
+    t.skip('Rust compiler unavailable in preparation environment; required for full validation');
     return;
   }
   const dir = mkdtempSync(join(tmpdir(), 'makepad-unified-'));
@@ -29,26 +29,26 @@ function rust(t, name, text, expected) {
 }
 
 test('shared fork has one clock module, keyboard ownership and WASM layout guard', () => {
-  assert.equal(read('platform/src/lib.rs').split('pub mod sols_browser_time;').length-1,1);
-  assert.equal(read(widgets[0]+'/lib.rs').split('mod trade_input_keyboard;').length-1,1);
+  assert.equal(read('platform/src/lib.rs').split('pub mod browser_time;').length-1,1);
+  assert.equal(read(widgets[0]+'/lib.rs').split('mod input_keyboard;').length-1,1);
   assert.match(read(widgets[0]+'/slider.rs'),/SliderAction::TextSlide/);
-  assert.match(read(widgets[0]+'/slider.rs'),/trade_input_keyboard::quantized/);
-  assert.match(read(widgets[0]+'/scroll_bar.rs'),/trade_input_keyboard::scroll/);
+  assert.match(read(widgets[0]+'/slider.rs'),/input_keyboard::quantized/);
+  assert.match(read(widgets[0]+'/scroll_bar.rs'),/input_keyboard::scroll/);
   assert.match(read('draw/src/text/fonts.rs'),/f32::INFINITY/);
   const vars = read('platform/src/draw_vars.rs');
   assert.match(vars,/DrawVars instance array must end exactly at the struct boundary/);
-  assert.ok(vars.includes('sols_instance_align_pad') || vars.includes('dyn_instances_pad'));
-  assert.match(read('sols_trade_source.txt'),/^format=sols-trade-makepad-v1\n/);
+  assert.ok(vars.includes('instance_align_pad') || vars.includes('dyn_instances_pad'));
+  assert.match(read('fork_source.txt'),/^format=makepad-fork-v1\n/);
 });
 
 test('shared keyboard helper preserves fractional steps, bounds and axis selection', t => {
-  rust(t,'keyboard',read(widgets[0]+'/trade_input_keyboard.rs'),2);
+  rust(t,'keyboard',read(widgets[0]+'/input_keyboard.rs'),2);
 });
 
 test('actual browser clock implementation handles elapsed time, epochs and overflow', t => {
   // Compile the browser branch on the host, replacing only its target gates.
   // This exercises the implementation; it is not a WASM integration build.
-  const shim=read('platform/src/sols_browser_time.rs')
+  const shim=read('platform/src/browser_time.rs')
     .replaceAll('#[cfg(not(target_arch = "wasm32"))]','#[cfg(not(test))]')
     .replaceAll('#[cfg(target_arch = "wasm32")]','#[cfg(test)]');
   rust(t,'clock',`mod clock {\n${shim}\n}

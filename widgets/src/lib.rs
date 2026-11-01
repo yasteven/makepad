@@ -525,4 +525,4 @@ mod animated_image_gif_registration_tests {
 }
 
 // Shared slider and scrollbar keyboard policy.
-mod trade_input_keyboard;
+mod input_keyboard;

@@ -886,7 +886,7 @@ impl Cx {
         // This is also the public offscreen rendering entry point. Direct
         // callers need the same shader readiness as the event-loop path.
         self.gpusim_compile_shaders();
-        let frame_start = crate::sols_browser_time::Instant::now();
+        let frame_start = crate::browser_time::Instant::now();
         let profile_enabled = std::env::var("MAKEPAD_GPUSIM_PROFILE").is_ok();
 
         let mut profile = RenderProfile::default();
@@ -1544,7 +1544,7 @@ impl Cx {
                 if let Some(texture) = &draw_call.texture_slots[tex_idx] {
                     let texture_id = texture.texture_id();
                     let cxtexture = &self.textures[texture_id];
-                    let __tex_t0 = crate::sols_browser_time::Instant::now();
+                    let __tex_t0 = crate::browser_time::Instant::now();
                     let __info = gpusim_texture_info(
                         texture_id.0,
                         cxtexture,
@@ -1711,7 +1711,7 @@ impl Cx {
                 p.total_triangles += tri_count * submitted.len();
             }
 
-            let vertex_start = crate::sols_browser_time::Instant::now();
+            let vertex_start = crate::browser_time::Instant::now();
             let shaded_vert_count = submitted.len() * vertex_count;
             let mut shaded_positions = vec![[0.0f32; 4]; shaded_vert_count];
             let mut shaded_varyings = vec![0.0f32; shaded_vert_count * varying_slots];
@@ -1797,7 +1797,7 @@ impl Cx {
             // is what the row split below is sized against — splitting the whole
             // framebuffer meant a draw covering forty rows handed every band but
             // one an empty range.
-            let raster_start = crate::sols_browser_time::Instant::now();
+            let raster_start = crate::browser_time::Instant::now();
             let mut setups: Vec<TriSetup> =
                 Vec::with_capacity(tri_count.saturating_mul(submitted.len()));
             let mut covered_px = 0usize;

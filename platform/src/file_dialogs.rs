@@ -91,6 +91,24 @@ pub(crate) fn load_virtual_files(
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        #[cfg(target_os = "android")]
+        if path.to_string_lossy().starts_with("content://") {
+            // This function runs on the heavy worker lane, never the UI thread.
+            // SAF document URIs are opened by ContentResolver, not std::fs.
+            let remaining = limits.max_total_size.saturating_sub(total);
+            let limit = limits.max_file_size.min(remaining);
+            let bytes = unsafe {
+                crate::os::linux::android::android_jni::read_document_bytes(
+                    &path.to_string_lossy(), limit,
+                )
+            }?;
+            total = total.checked_add(bytes.len() as u64)
+                .ok_or_else(|| "combined document size overflowed".to_string())?;
+            data.push(VirtualFileData {
+                mime: mime_from_path(&path).to_string(), name, bytes,
+            });
+            continue;
+        }
         let size = std::fs::metadata(&path)
             .map_err(|error| format!("cannot inspect '{}': {error}", path.display()))?
             .len();
@@ -444,8 +462,8 @@ mod tests {
     fn native_file_loading_runs_on_a_worker_and_preserves_bytes() {
         use std::sync::mpsc::channel;
 use std::thread;
-use crate::sols_browser_time::SystemTime;
-use crate::sols_browser_time::UNIX_EPOCH;
+use crate::browser_time::SystemTime;
+use crate::browser_time::UNIX_EPOCH;
 
         let ui_thread = thread::current().id();
         let unique = SystemTime::now()

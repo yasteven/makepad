@@ -356,7 +356,7 @@ impl Cx {
         pix_height: f64,
     ) -> bool {
         let draw_list_id = self.passes[draw_pass_id].main_draw_list_id.unwrap();
-        let frame_started = crate::sols_browser_time::Instant::now();
+        let frame_started = crate::browser_time::Instant::now();
         unsafe {
             let gl = self.os.gl();
             let opengl_cx = self.os.opengl_cx.as_ref().unwrap();
@@ -371,10 +371,10 @@ impl Cx {
             }
             (gl.glViewport)(0, 0, pix_width.floor() as i32, pix_height.floor() as i32);
         }
-        let bound = crate::sols_browser_time::Instant::now();
+        let bound = crate::browser_time::Instant::now();
 
         self.setup_render_pass(draw_pass_id, false);
-        let setup_done = crate::sols_browser_time::Instant::now();
+        let setup_done = crate::browser_time::Instant::now();
 
         self.passes[draw_pass_id].paint_dirty = false;
 
@@ -544,7 +544,7 @@ impl Cx {
 
         unsafe {
             let opengl_cx = self.os.opengl_cx.as_ref().unwrap();
-            let render_done = crate::sols_browser_time::Instant::now();
+            let render_done = crate::browser_time::Instant::now();
             let swap_ok = {
                 let _phase = crate::thread::ui_phase(crate::thread::UiPhase::GpuWait);
                 (opengl_cx.libegl.eglSwapBuffers.unwrap())(opengl_cx.egl_display, egl_surface)

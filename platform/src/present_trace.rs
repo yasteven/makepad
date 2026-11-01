@@ -8,8 +8,8 @@ use std::sync::mpsc;
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Duration;
+use crate::browser_time::Instant;
 
 #[derive(Clone, Copy)]
 #[repr(usize)]

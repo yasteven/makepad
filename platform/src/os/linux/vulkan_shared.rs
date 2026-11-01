@@ -62,7 +62,7 @@ pub(super) struct SharedState {
     retired: Vec<FrameLease>,
     waits: Vec<(vk::Semaphore, u64)>,
     signals: Vec<(vk::Semaphore, u64)>,
-    trace_last: Option<crate::sols_browser_time::Instant>,
+    trace_last: Option<crate::browser_time::Instant>,
     #[cfg(linux_direct)]
     snapshots: Vec<(VulkanTextureKey, VulkanTextureKey, VulkanTextureResource)>,
     #[cfg(linux_direct)]
@@ -100,7 +100,7 @@ impl CxVulkan {
         if !crate::makepad_error_log::trace_enabled("runview.leases") {
             return;
         }
-        let now = crate::sols_browser_time::Instant::now();
+        let now = crate::browser_time::Instant::now();
         if self.desktop.shared.trace_last.is_some_and(|at| now.duration_since(at).as_secs_f64() < 1.0) {
             return;
         }

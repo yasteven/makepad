@@ -337,7 +337,7 @@ fn write_log_record(
     }
 }
 
-use crate::sols_browser_time::Duration;
+use crate::browser_time::Duration;
 
 pub struct ProfileStart {
     started_at: f64,

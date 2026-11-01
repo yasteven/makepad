@@ -25,6 +25,8 @@ mod arc_string_mut;
 mod cx_api;
 mod shared_bytes;
 
+#[cfg(target_os = "android")]
+pub mod android_services;
 pub mod action;
 pub mod game_input;
 pub mod frame_trace;
@@ -345,4 +347,4 @@ pub use {
 pub use crate::draw_shader::DrawShaderId;
 
 // Shared browser clocks; native builds re-export std::time.
-pub mod sols_browser_time;
+pub mod browser_time;

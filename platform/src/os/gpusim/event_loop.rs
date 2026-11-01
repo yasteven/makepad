@@ -19,8 +19,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::thread;
-use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Duration;
+use crate::browser_time::Instant;
 
 /// Backing-store scale for a gpusim window. Retina by default, because a
 /// screenshot is expected to match what a real display would show. Rendering is

@@ -62,8 +62,8 @@ pub(crate) fn stdin_trace(line: &str) {
             .open(dir.join("stdin.log"))
             .ok();
     }
-    let ms = crate::sols_browser_time::SystemTime::now()
-        .duration_since(crate::sols_browser_time::UNIX_EPOCH)
+    let ms = crate::browser_time::SystemTime::now()
+        .duration_since(crate::browser_time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0);
     if let Some(f) = file.as_mut() {
@@ -154,7 +154,7 @@ impl Cx {
         self.call_event_handler(&Event::Startup);
         Self::stdin_send_to_host(AppToStudio::AfterStartup);
 
-        let mut last_recv: Option<crate::sols_browser_time::Instant> = None;
+        let mut last_recv: Option<crate::browser_time::Instant> = None;
         loop {
             if !Self::has_studio_web_socket() {
                 crate::error!("--stdin-loop mode requires a studio websocket");
@@ -172,7 +172,7 @@ impl Cx {
                     stdin_trace(&format!("rxgap {:.1}", gap));
                 }
             }
-            last_recv = Some(crate::sols_browser_time::Instant::now());
+            last_recv = Some(crate::browser_time::Instant::now());
             crate::memory_watchdog::note_stdin_host_message();
 
             match incoming {
@@ -397,12 +397,12 @@ impl Cx {
                 }
                 let drew = self.need_redrawing();
                 if drew {
-                    let t0 = crate::sols_browser_time::Instant::now();
+                    let t0 = crate::browser_time::Instant::now();
                     self.call_draw_event(time_now);
                     self.mtl_compile_shaders(metal_cx);
                     stdin_trace(&format!("draw {:.1}", t0.elapsed().as_secs_f64() * 1000.0));
                 }
-                let t0 = crate::sols_browser_time::Instant::now();
+                let t0 = crate::browser_time::Instant::now();
                 self.stdin_handle_repaint(
                     metal_cx,
                     stdin_windows,
@@ -416,7 +416,7 @@ impl Cx {
                 }
 
                 let gc_start = self.seconds_since_app_start();
-                let gc_t0 = crate::sols_browser_time::Instant::now();
+                let gc_t0 = crate::browser_time::Instant::now();
                 let mut gc_heap_live = None;
                 self.with_vm(|vm| {
                     if vm.heap().needs_gc() {

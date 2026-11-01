@@ -21,8 +21,8 @@
 //!   only when its swap would land after the outstanding callback is due,
 //!   which is the case exactly when frames are slow enough to need it.
 
-use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Duration;
+use crate::browser_time::Instant;
 
 /// What presents for the running process, as far as pacing is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

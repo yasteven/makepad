@@ -13,7 +13,7 @@ use std::net::TcpStream;
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::sync::OnceLock;
-use crate::sols_browser_time::Duration;
+use crate::browser_time::Duration;
 
 #[repr(C)]
 struct SSL_CTX {

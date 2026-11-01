@@ -7,8 +7,8 @@ use std::ffi::CStr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
-use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Duration;
+use crate::browser_time::Instant;
 
 const SIGPROF: i32 = 27;
 #[cfg(target_arch = "x86_64")]

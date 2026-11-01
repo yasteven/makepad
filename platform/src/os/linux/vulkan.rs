@@ -58,7 +58,7 @@ use std::sync::Arc;
 use std::os::raw::c_void;
 #[cfg(target_os = "android")]
 use std::os::raw::c_char;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Instant;
 
 #[cfg(target_os = "android")]
 #[link(name = "nativewindow")]

@@ -1172,8 +1172,8 @@ impl Cx {
         }
         // PerfMonitor "draw" channel: CPU-side pass encode (all passes of a
         // frame sum), separate from the nextDrawable wait timed by the caller.
-        let perf_t0 = self.perf_monitor.enabled().then(crate::sols_browser_time::Instant::now);
-        let perf_encode_t0 = crate::sols_browser_time::Instant::now();
+        let perf_t0 = self.perf_monitor.enabled().then(crate::browser_time::Instant::now);
+        let perf_encode_t0 = crate::browser_time::Instant::now();
         self.os.bytes_written = 0;
         self.os.draw_calls_done = 0;
         self.os.instances_done = 0;
@@ -2043,7 +2043,7 @@ impl Cx {
         let _mp_batch = (
             crate::startup_trace_enabled(),
             self.draw_shaders.compile_set.len(),
-            crate::sols_browser_time::Instant::now(),
+            crate::browser_time::Instant::now(),
         );
         if _mp_batch.0 && _mp_batch.1 > 0 {
             crate::startup_trace(&format!("mtl_compile_shaders begin ({})", _mp_batch.1));
@@ -2556,8 +2556,8 @@ fn spawn_hang_watchdog(
                         let _ = writeln!(
                             file,
                             "{} pid={} exe={:?}\n{}",
-                            crate::sols_browser_time::SystemTime::now()
-                                .duration_since(crate::sols_browser_time::UNIX_EPOCH)
+                            crate::browser_time::SystemTime::now()
+                                .duration_since(crate::browser_time::UNIX_EPOCH)
                                 .map(|d| d.as_secs())
                                 .unwrap_or(0),
                             std::process::id(),
@@ -4583,7 +4583,7 @@ impl MetalBuffer {
         }
         // Every copy is whole this frame: a draw item's own data and a
         // retained publication alike (contract §7; pacing is the producer's).
-        let start_time = crate::sols_browser_time::Instant::now();
+        let start_time = crate::browser_time::Instant::now();
         if self.pending.is_none() {
             let start = range.start.min(range.end) * 4;
             // Append only beyond the resident prefix: earlier command buffers
@@ -6585,9 +6585,9 @@ fn gpu_profile_accumulate(label: &str, gpu_seconds: f64, counters: &GpuSampleCou
         instances: u64,
         instance_bytes: u64,
     }
-    static TABLE: Mutex<Option<(crate::sols_browser_time::Instant, HashMap<String, Slot>)>> = Mutex::new(None);
+    static TABLE: Mutex<Option<(crate::browser_time::Instant, HashMap<String, Slot>)>> = Mutex::new(None);
     let Ok(mut guard) = TABLE.lock() else { return };
-    let (started, table) = guard.get_or_insert_with(|| (crate::sols_browser_time::Instant::now(), HashMap::new()));
+    let (started, table) = guard.get_or_insert_with(|| (crate::browser_time::Instant::now(), HashMap::new()));
     let slot = table.entry(label.to_string()).or_default();
     if gpu_seconds.is_finite() && gpu_seconds > 0.0 {
         slot.gpu_s += gpu_seconds;
@@ -6855,8 +6855,8 @@ static INPUT_AT_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 
 fn now_us() -> u64 {
-    crate::sols_browser_time::SystemTime::now()
-        .duration_since(crate::sols_browser_time::UNIX_EPOCH)
+    crate::browser_time::SystemTime::now()
+        .duration_since(crate::browser_time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)
 }
@@ -6887,8 +6887,8 @@ fn present_pulse() {
     }
     let input_at = INPUT_AT_US.swap(0, std::sync::atomic::Ordering::Relaxed);
     if input_at > 0 {
-        let now_us = crate::sols_browser_time::SystemTime::now()
-            .duration_since(crate::sols_browser_time::UNIX_EPOCH)
+        let now_us = crate::browser_time::SystemTime::now()
+            .duration_since(crate::browser_time::UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
         crate::trace!(
@@ -6897,8 +6897,8 @@ fn present_pulse() {
             (now_us.saturating_sub(input_at)) as f64 / 1000.0
         );
     }
-    let now = crate::sols_browser_time::SystemTime::now()
-        .duration_since(crate::sols_browser_time::UNIX_EPOCH)
+    let now = crate::browser_time::SystemTime::now()
+        .duration_since(crate::browser_time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
     LAST.with(|last| {

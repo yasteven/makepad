@@ -958,7 +958,7 @@ impl CxDrawListPool {
             self.1.retirement_queued.store(true, Ordering::Release);
             return true;
         }
-        let started = crate::sols_browser_time::Instant::now();
+        let started = crate::browser_time::Instant::now();
         let mut examined = 0;
         // At most 256 payloads / 512 metadata visits / 200 us, with four
         // bounded worker jobs. Larger prepared envelopes drain retired scene
@@ -3602,7 +3602,7 @@ mod uniform_generation_tests {
             dyn_uniforms: call.dyn_uniforms,
             texture_slots: call.texture_slots.clone(),
             uniform_buffer_slots: call.uniform_buffer_slots.clone(),
-            sols_instance_align_pad: Default::default(),
+            instance_align_pad: Default::default(),
             dyn_instances: [0.0; crate::draw_vars::DRAW_CALL_DYN_INSTANCES],
         };
         vars.dyn_uniforms[0] += 1.0;

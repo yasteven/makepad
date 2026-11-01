@@ -320,7 +320,7 @@ impl Cx {
                         // update the instance buffer data; what the copy costs
                         // feeds the producers' pacing (contract §8), recorded
                         // at the pass's end.
-                        let copy_started = crate::sols_browser_time::Instant::now();
+                        let copy_started = crate::browser_time::Instant::now();
                         let uploaded = if let Some(retained) = &draw_item.retained_instances {
                             let Some(uploaded) = draw_item
                                 .os
@@ -907,7 +907,7 @@ impl Cx {
             // every 33 ms forever. Skip the frame instead — the caller keeps the
             // pass dirty — and only spend a frame probing now and then, since the
             // stall can end without anything telling us.
-            let now = crate::sols_browser_time::Instant::now();
+            let now = crate::browser_time::Instant::now();
             let since = *d3d11_window.latency_timeout_since.get_or_insert(now);
             if now.duration_since(since) < LATENCY_TIMEOUT_PROBE_INTERVAL {
                 // Unless a capture is waiting on this window: render it anyway and
@@ -1862,9 +1862,9 @@ pub struct D3d11Window {
     pub last_frame_stats: Option<(u32, f64)>,
     /// When this window first reported itself occluded or minimized; drives the
     /// probe interval that keeps a stale flag from freezing it forever.
-    pub occluded_since: Option<crate::sols_browser_time::Instant>,
+    pub occluded_since: Option<crate::browser_time::Instant>,
     /// When its frame-latency wait first timed out; same probe treatment.
-    pub latency_timeout_since: Option<crate::sols_browser_time::Instant>,
+    pub latency_timeout_since: Option<crate::browser_time::Instant>,
     /// The D3D device was removed/reset. Nothing this window presents can ever
     /// land again, so the paint loop stops re-dirtying its pass (recovery would
     /// mean recreating the device, which is out of scope).
@@ -2328,7 +2328,7 @@ impl D3d11Window {
                 // as not-presented and let the occlusion probe back us off, the same
                 // way the macOS backend handles `occlusionState`.
                 self.occluded_since
-                    .get_or_insert_with(crate::sols_browser_time::Instant::now);
+                    .get_or_insert_with(crate::browser_time::Instant::now);
                 try_with_win32_app(|app| app.frame_trace.present_occluded());
                 return false;
             }

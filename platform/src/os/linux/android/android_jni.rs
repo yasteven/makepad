@@ -647,7 +647,7 @@ pub unsafe fn post_vsync_callback() {
 /// thread paces frames manually, since there is no system vsync callback.
 fn init_simple_render_loop(device_refresh_rate: f32) {
     std::thread::spawn(move || {
-        let mut last_frame_time = crate::sols_browser_time::Instant::now();
+        let mut last_frame_time = crate::browser_time::Instant::now();
         let target_frame_time = std::time::Duration::from_secs_f32(1.0 / device_refresh_rate);
         loop {
             // Exit the thread once the app has shut down and the Java->native
@@ -672,11 +672,11 @@ fn init_simple_render_loop(device_refresh_rate: f32) {
                 break;
             }
 
-            let now = crate::sols_browser_time::Instant::now();
+            let now = crate::browser_time::Instant::now();
             let elapsed = now - last_frame_time;
 
             if elapsed >= target_frame_time {
-                let frame_start = crate::sols_browser_time::Instant::now();
+                let frame_start = crate::browser_time::Instant::now();
                 send_from_java_message(FromJavaMessage::RenderLoop);
                 let frame_duration = frame_start.elapsed();
 
@@ -2425,4 +2425,140 @@ pub unsafe fn to_java_update_ime_text_state(
     );
 
     (**env).DeleteLocalRef.unwrap()(env, text_jstr);
+}
+
+/// Read one explicitly selected SAF document on a worker, with a hard byte cap.
+/// This is intentionally synchronous; callers must use the heavy task lane.
+pub unsafe fn read_document_bytes(uri: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+    if max_bytes > (i32::MAX - 8) as u64 {
+        return Err("Document byte limit exceeds Android array capacity".into());
+    }
+    let env = attach_jni_env();
+    let activity = get_activity();
+    if activity.is_null() { return Err("Document activity is no longer available".into()); }
+    if (**env).PushLocalFrame.unwrap()(env, 8) < 0 {
+        (**env).ExceptionClear.unwrap()(env);
+        return Err("Cannot allocate document JNI references".into());
+    }
+    struct LocalFrame(*mut jni_sys::JNIEnv);
+    impl Drop for LocalFrame {
+        fn drop(&mut self) { unsafe { (**self.0).PopLocalFrame.unwrap()(self.0, std::ptr::null_mut()); } }
+    }
+    let _frame = LocalFrame(env);
+    let utf16: Vec<u16> = uri.encode_utf16().collect();
+    if utf16.len() > i32::MAX as usize { return Err("Selected document URI is too long".into()); }
+    let uri_string = (**env).NewString.unwrap()(env, utf16.as_ptr(), utf16.len() as jni_sys::jsize);
+    if uri_string.is_null() || (**env).ExceptionCheck.unwrap()(env) != 0 {
+        (**env).ExceptionClear.unwrap()(env);
+        return Err("Cannot allocate selected document URI".into());
+    }
+    let class = (**env).GetObjectClass.unwrap()(env, activity);
+    if class.is_null() || (**env).ExceptionCheck.unwrap()(env) != 0 {
+        (**env).ExceptionClear.unwrap()(env);
+        return Err("Cannot prepare selected document read".into());
+    }
+    let method = (**env).GetMethodID.unwrap()(
+        env, class, b"readDocumentBytes\0".as_ptr() as _, b"(Ljava/lang/String;J)[B\0".as_ptr() as _,
+    );
+    if method.is_null() || (**env).ExceptionCheck.unwrap()(env) != 0 {
+        (**env).ExceptionClear.unwrap()(env);
+        return Err("Document byte reader is unavailable".into());
+    }
+    let args = [jni_sys::jvalue { l: uri_string }, jni_sys::jvalue { j: max_bytes as jni_sys::jlong }];
+    let result = (**env).CallObjectMethodA.unwrap()(env, activity, method, args.as_ptr());
+    if (**env).ExceptionCheck.unwrap()(env) != 0 {
+        (**env).ExceptionClear.unwrap()(env);
+        return Err("Selected document read failed".into());
+    }
+    if result.is_null() { return Err("Selected document unavailable or exceeds byte limit".into()); }
+    let length = (**env).GetArrayLength.unwrap()(env, result);
+    if length < 0 || length as u64 > max_bytes {
+        return Err("Selected document exceeds byte limit".into());
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length as usize).map_err(|_| "Cannot allocate selected document bytes")?;
+    bytes.resize(length as usize, 0u8);
+    if length > 0 {
+        (**env).GetByteArrayRegion.unwrap()(env, result, 0, length, bytes.as_mut_ptr() as *mut jni_sys::jbyte);
+        if (**env).ExceptionCheck.unwrap()(env) != 0 {
+            (**env).ExceptionClear.unwrap()(env);
+            return Err("Cannot copy selected document bytes".into());
+        }
+    }
+    Ok(bytes)
+}
+
+// Request-correlated device services use UTF-16 JNI strings so non-BMP text and
+// embedded NULs round-trip without modified-UTF-8 truncation or panics.
+pub unsafe fn to_java_device_service(request_id: u64, operation: i32, text: &str) -> Result<(), String> {
+    let env = attach_jni_env();
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let string = ((**env).NewString.unwrap())(env, units.as_ptr(), units.len() as i32);
+    if string.is_null() {
+        if ((**env).ExceptionCheck.unwrap())(env) != 0 { ((**env).ExceptionClear.unwrap())(env); }
+        return Err("Cannot allocate Android device-service request".into());
+    }
+    let activity = get_activity();
+    if activity.is_null() {
+        ((**env).DeleteLocalRef.unwrap())(env, string);
+        return Err("Android activity is unavailable".into());
+    }
+    let class = ((**env).GetObjectClass.unwrap())(env, activity);
+    if class.is_null() {
+        if ((**env).ExceptionCheck.unwrap())(env) != 0 { ((**env).ExceptionClear.unwrap())(env); }
+        ((**env).DeleteLocalRef.unwrap())(env, string);
+        return Err("Android activity class is unavailable".into());
+    }
+    let method = ((**env).GetMethodID.unwrap())(env, class,
+        b"requestDeviceService\0".as_ptr() as _, b"(JILjava/lang/String;)V\0".as_ptr() as _);
+    ((**env).DeleteLocalRef.unwrap())(env, class);
+    if method.is_null() {
+        if ((**env).ExceptionCheck.unwrap())(env) != 0 { ((**env).ExceptionClear.unwrap())(env); }
+        ((**env).DeleteLocalRef.unwrap())(env, string);
+        return Err("Android device-service bridge is unavailable".into());
+    }
+    ((**env).CallVoidMethod.unwrap())(env, activity, method, request_id as i64, operation, string);
+    ((**env).DeleteLocalRef.unwrap())(env, string);
+    if ((**env).ExceptionCheck.unwrap())(env) != 0 {
+        ((**env).ExceptionClear.unwrap())(env);
+        return Err("Android device-service request failed".into());
+    }
+    Ok(())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onDeviceServiceResult(
+    env: *mut jni_sys::JNIEnv, _class: jni_sys::jclass,
+    request_id: jni_sys::jlong, operation: jni_sys::jint,
+    success: jni_sys::jboolean, payload: jni_sys::jstring,
+) {
+    use crate::android_services::{ClipboardResult, NetworkSnapshotResult,
+        CLIPBOARD_TEXT_LIMIT, NETWORK_SNAPSHOT_LIMIT, release_request};
+    release_request();
+    let limit = if operation == 2 { NETWORK_SNAPSHOT_LIMIT } else { CLIPBOARD_TEXT_LIMIT };
+    let result = if payload.is_null() {
+        Err("Android returned no device-service result".to_string())
+    } else {
+        let len = ((**env).GetStringLength.unwrap())(env, payload);
+        if len < 0 || len as usize > limit {
+            Err("Android device-service result exceeds its size limit".to_string())
+        } else {
+            let mut units = vec![0u16; len as usize];
+            ((**env).GetStringRegion.unwrap())(env, payload, 0, len, units.as_mut_ptr());
+            if ((**env).ExceptionCheck.unwrap())(env) != 0 {
+                ((**env).ExceptionClear.unwrap())(env);
+                Err("Cannot read Android device-service result".to_string())
+            } else {
+                let text = String::from_utf16_lossy(&units);
+                if text.len() > limit { Err("Android device-service result exceeds its byte limit".to_string()) }
+                else if success == 0 { Err(text) } else { Ok(text) }
+            }
+        }
+    };
+    if operation == 2 {
+        crate::cx::Cx::post_action(NetworkSnapshotResult { request_id: request_id as u64, result });
+    } else {
+        crate::cx::Cx::post_action(ClipboardResult { request_id: request_id as u64,
+            result: result.map(|text| if operation == 0 { None } else { Some(text) }) });
+    }
 }

@@ -19,7 +19,7 @@ use {
     },
     std::cell::RefCell,
     std::rc::Rc,
-    crate::sols_browser_time::Instant,
+    crate::browser_time::Instant,
 };
 #[cfg(use_vulkan)]
 use crate::event::WindowGeomChangeEvent;

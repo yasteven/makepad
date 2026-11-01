@@ -30,7 +30,7 @@ use {
     },
     std::ptr,
     std::sync::mpsc,
-    crate::sols_browser_time::Instant,
+    crate::browser_time::Instant,
 };
 
 #[cfg(use_vulkan)]

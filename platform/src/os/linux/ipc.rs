@@ -336,8 +336,8 @@ impl<TX, RX> Channel<TX, RX> {
         use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::Ordering;
-use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Duration;
+use crate::browser_time::Instant;
         #[repr(C)]
         struct Address { family: u16, path: [u8; 108] }
         use crate::os::linux::v4l2_sys::{poll, pollfd};

@@ -1175,6 +1175,7 @@ export class WasmWebBrowser extends WasmBridge {
             this.to_wasm.ToWasmAnimationFrame({ time: time / 1000.0 });
             this.in_animation_frame = true;
             this.do_wasm_pump();
+            this.did_present_live_video?.();
             this.in_animation_frame = false;
         })
     }

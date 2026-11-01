@@ -3216,6 +3216,62 @@ export class WasmWebGL extends WasmWebBrowser {
       return;
     }
     let key = args.video_id_lo + "_" + args.video_id_hi;
+    // A live source transfers frames into the normal Video texture/render path.
+    // No additional DOM compositor or application-owned WebGL context is used.
+    if (args.source_url.startsWith("makepad-live:")) {
+      const channel = args.source_url.slice("makepad-live:".length);
+      const old = this.video_players[key];
+      if (old) this.dispose_video_player(old);
+      const player = {
+        texture_id: args.texture_id, video_id_lo: args.video_id_lo,
+        video_id_hi: args.video_id_hi, playing: true, disposed: false,
+        live_channel: channel, external_frame: null, generation: -1,
+        width: 0, height: 0, handlers: {},
+      };
+      player.video = {
+        play: () => { player.playing = true; this.ensure_video_animation_frame(); return Promise.resolve(); },
+        pause: () => { player.playing = false; },
+        removeEventListener() {}, removeAttribute() {}, load() {},
+      };
+      player.frame_listener = event => {
+        const d = event.detail;
+        if (!d || d.channel !== channel || !Number.isSafeInteger(d.generation) ||
+            d.generation < player.generation || player.disposed || this.webgl_context_lost) return;
+        if (d.generation !== player.generation || !d.frame) {
+          if (player.external_frame) player.external_frame.close();
+          player.external_frame = null;
+          player.generation = d.generation;
+          this.pending_live_presented?.delete(key);
+          const gl = this.gl;
+          let texture = this.textures[player.texture_id];
+          if (texture) this.invalidate_texture_dependencies(texture);
+          else texture = gl.createTexture();
+          if (!texture) return;
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          this.configure_texture_parameters(gl, gl.TEXTURE_2D, false, false);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+          texture._texture_target = gl.TEXTURE_2D;
+          texture._texture_upload_width = texture._texture_upload_height = 1;
+          texture._texture_upload_format = MAKEPAD_WEBGL_VIDEO_UPLOAD_FORMAT;
+          this.clear_render_target_allocation(texture);texture._render_target_valid = true;
+          this.textures[player.texture_id] = texture;
+          player.width = player.height = 0;
+          this.to_wasm.ToWasmVideoTextureUpdated({video_id_lo: player.video_id_lo,
+            video_id_hi: player.video_id_hi, current_position_lo: 0, current_position_hi: 0});
+          this.do_wasm_pump();
+        }
+        if (!d.frame || !player.playing) return;
+        // One pending clone per widget. A superseded frame is closed immediately.
+        const next = d.frame.clone();
+        if (player.external_frame) player.external_frame.close();
+        player.external_frame = next;
+        d.accepted = true;
+        this.ensure_video_animation_frame();
+      };
+      this.canvas.addEventListener("makepad-video-frame", player.frame_listener);
+      this.video_players[key] = player;
+      return;
+    }
     let video = document.createElement("video");
     video.crossOrigin = "anonymous";
     video.playsInline = true;
@@ -3295,6 +3351,9 @@ export class WasmWebGL extends WasmWebBrowser {
       return;
     }
     player.disposed = true;
+    if (player.frame_listener) this.canvas.removeEventListener("makepad-video-frame", player.frame_listener);
+    if (player.external_frame) player.external_frame.close();
+    player.external_frame = null;
     player.playing = false;
     for (const [name, handler] of Object.entries(player.handlers || {})) {
       player.video.removeEventListener(name, handler);
@@ -3421,15 +3480,20 @@ export class WasmWebGL extends WasmWebBrowser {
     let gl = this.gl;
     let any_playing = false;
     let any_updated = false;
+    if (!this.pending_live_presented) this.pending_live_presented = new Map();
 
     for (let key in this.video_players) {
       let player = this.video_players[key];
       if (!player.playing) continue;
 
-      any_playing = true;
-
-      let video = player.video;
-      if (video.readyState < 2) continue;
+      // File playback polls while playing. Live playback schedules only on arrival.
+      if (!player.live_channel) any_playing = true;
+      let frame = player.external_frame;
+      if (player.live_channel && !frame) continue;
+      player.external_frame = null;
+      try {
+      let video = frame || player.video;
+      if (!frame && video.readyState < 2) continue;
 
       if (!Number.isSafeInteger(player.texture_id) || player.texture_id < 0) {
         this.report_texture_upload_once(
@@ -3440,8 +3504,8 @@ export class WasmWebGL extends WasmWebBrowser {
         continue;
       }
 
-      const width = video.videoWidth;
-      const height = video.videoHeight;
+      const width = frame ? frame.displayWidth : video.videoWidth;
+      const height = frame ? frame.displayHeight : video.videoHeight;
       if (
         Number.isSafeInteger(width) &&
         Number.isSafeInteger(height) &&
@@ -3614,14 +3678,21 @@ export class WasmWebGL extends WasmWebBrowser {
       }
 
       any_updated = true;
-
-      let current_ms = Math.round(video.currentTime * 1000);
+      if (frame && (player.width !== width || player.height !== height)) {
+        player.width = width; player.height = height;
+        this.to_wasm.ToWasmVideoPlaybackPrepared({video_id_lo: player.video_id_lo,
+          video_id_hi: player.video_id_hi, video_width: width, video_height: height,
+          duration_lo: 0, duration_hi: 0});
+      }
+      let current_ms = Math.max(0, Math.round(frame ? frame.timestamp / 1000 : video.currentTime * 1000));
       this.to_wasm.ToWasmVideoTextureUpdated({
         video_id_lo: player.video_id_lo,
         video_id_hi: player.video_id_hi,
         current_position_lo: current_ms & 0xFFFFFFFF,
         current_position_hi: Math.floor(current_ms / 0x100000000),
       });
+      if (frame) this.pending_live_presented.set(key,{channel:player.live_channel,generation:player.generation,timestamp:frame.timestamp,width,height});
+      } finally { if (frame) frame.close(); }
     }
 
     if (any_updated) {
@@ -3629,6 +3700,20 @@ export class WasmWebGL extends WasmWebBrowser {
     }
     if (any_playing) {
       this.ensure_video_animation_frame();
+    }
+  }
+
+  // Called after the owned animation-frame pump has submitted the canvas pass.
+  // Consumers may sample diagnostics synchronously before the browser discards
+  // a non-preserved WebGL drawing buffer. Only latest metadata per player lives here.
+  did_present_live_video() {
+    const pending = this.pending_live_presented;
+    if (!pending || this.webgl_context_lost) return;
+    this.pending_live_presented = new Map();
+    for (const [key, detail] of pending) {
+      const player = this.video_players[key];
+      if (!player || player.disposed || player.generation !== detail.generation) continue;
+      this.canvas.dispatchEvent(new CustomEvent("makepad-video-presented", {detail}));
     }
   }
 
@@ -3770,6 +3855,7 @@ export class WasmWebGL extends WasmWebBrowser {
       }
     }
     this.video_players = {};
+    this.pending_live_presented?.clear();
     try {
       this.stop_terminal_web_runtime();
     } catch (error) {

@@ -48,7 +48,7 @@ fn default_slug_min_dpxs_per_em(cx: &Cx, rasterizer: &Rasterizer) -> f32 {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (cx, rasterizer);
-        crate::makepad_platform::log!("SOLS WASM text renderer: glyph atlas");
+        crate::makepad_platform::log!("Makepad WASM text renderer: glyph atlas");
         f32::INFINITY
     }
     #[cfg(not(target_arch = "wasm32"))]

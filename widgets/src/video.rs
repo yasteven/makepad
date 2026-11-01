@@ -64,6 +64,7 @@ script_mod! {
             image_scale: instance(vec2(1.0, 1.0))
             image_pan: instance(vec2(0.5, 0.5))
 
+            live_contain: uniform(0.0)
             source_size: uniform(vec2(1.0, 1.0))
             target_size: uniform(vec2(-1.0, -1.0))
 
@@ -156,6 +157,20 @@ script_mod! {
             }
 
             get_color_scale_pan: fn() {
+                // Live presentation uses the actual layout rect on every draw,
+                // including Fill walks and clipping during viewport changes.
+                if self.live_contain > 0.5 {
+                    let source_aspect = max(self.source_size.x,1.0) / max(self.source_size.y,1.0)
+                    let target_aspect = max(self.rect_size.x,1.0) / max(self.rect_size.y,1.0)
+                    let mut fit = vec2(1.0,1.0)
+                    if source_aspect > target_aspect { fit.y = target_aspect / source_aspect }
+                    else { fit.x = source_aspect / target_aspect }
+                    let uv = (self.pos - vec2(0.5,0.5)) / fit + vec2(0.5,0.5)
+                    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 { return vec4(0.0,0.0,0.0,1.0) }
+                    if self.yuv_enabled > 0.5 { return self.sample_yuv(uv) }
+                    else if self.video_rgba_2d > 0.5 { return self.video_texture_2d.sample(uv) }
+                    else { return self.sample_oes(uv) }
+                }
                 // Early return for default scaling and panning,
                 // used when walk size is not specified or non-fixed.
                 if self.target_size.x <= 0.0 || self.target_size.y <= 0.0 {
@@ -510,6 +525,11 @@ pub struct Video {
     #[rust]
     native_preview_attached: bool,
 
+    /// Application-owned live frames; disables playback gestures and idle controls.
+    #[live(false)] live_input: bool,
+    #[rust] live_presentation: bool,
+    #[rust] live_yuv: bool,
+
     // Playback
     #[live(false)]
     is_looping: bool,
@@ -599,6 +619,10 @@ impl ScriptHook for Video {
             return;
         }
         vm.with_cx_mut(|cx| {
+            if self.live_input {
+                self.live_presentation = true;
+                self.live_yuv = !cfg!(target_arch = "wasm32");
+            }
             self.ensure_primary_texture(cx);
             self.apply_thumbnail_settings(cx);
             // Prepare the video when autoplay is enabled (so it starts immediately) or when
@@ -612,6 +636,64 @@ impl ScriptHook for Video {
 }
 
 impl VideoRef {
+    /// Present an application-owned decoded I420 frame using the shared video
+    /// shader/layout. The caller owns decode, stream generation, and cancellation.
+    /// This method never waits on a worker or registers a platform player.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn present_live_yuv(&self, cx: &mut Cx, frame: makepad_platform::video_decode::yuv::YuvPlaneData) -> Result<(), String> {
+        use makepad_platform::video_decode::yuv::YuvLayout;
+        let w = frame.width as usize; let h = frame.height as usize;
+        if w == 0 || h == 0 || w > 4096 || h > 4096 || frame.layout != YuvLayout::I420 ||
+            frame.y_stride != 0 || frame.u_stride != 0 || frame.v_stride != 0 ||
+            frame.y.len() != w*h || frame.u.len() != w.div_ceil(2)*h.div_ceil(2) || frame.v.len() != frame.u.len() {
+            return Err("Live frame must be bounded, tightly packed I420".into());
+        }
+        let Some(mut inner) = self.borrow_mut() else { return Err("Video widget is unavailable".into()) };
+        inner.live_presentation = true; inner.live_yuv = true;
+        inner.show_controls = false; inner.should_prepare_playback = false;
+        inner.ensure_primary_texture(cx);
+        let same_size = inner.video_width == w && inner.video_height == h;
+        fn plane(cx: &mut Cx, slot: &mut Option<Texture>, w: usize, h: usize, bytes: Vec<u8>, reuse: bool) {
+            if reuse {
+                if let Some(texture) = slot {
+                    // Uploads retain the CPU plane; take it before replacing its data.
+                    drop(texture.take_vec_u8(cx));
+                    texture.put_back_vec_u8(cx, bytes, None);
+                    return;
+                }
+            }
+            *slot = Some(Texture::new_with_format(cx, TextureFormat::VecRu8 {
+                width: w, height: h, data: Some(bytes), unpack_row_length: None, updated: TextureUpdated::Full,
+            }));
+        }
+        plane(cx, &mut inner.tex_y, w, h, frame.y, same_size);
+        plane(cx, &mut inner.tex_u, w.div_ceil(2), h.div_ceil(2), frame.u, same_size);
+        plane(cx, &mut inner.tex_v, w.div_ceil(2), h.div_ceil(2), frame.v, same_size);
+        for (index, texture) in [(2, inner.tex_y.clone()), (3, inner.tex_u.clone()), (4, inner.tex_v.clone())] {
+            if let Some(texture) = texture { inner.draw_bg.draw_vars.set_texture(index, &texture); }
+        }
+        inner.video_width = w; inner.video_height = h;
+        inner.playback_state = PlaybackState::Playing; inner.last_error = None;
+        inner.draw_bg.set_uniform(cx, id!(source_size), &[w as f32, h as f32]);
+        inner.draw_bg.set_uniform(cx, id!(show_thumbnail), &[0.0]);
+        inner.draw_bg.set_uniform(cx, id!(yuv_enabled), &[1.0]);
+        inner.draw_bg.set_uniform(cx, id!(yuv_type), &[frame.matrix.as_f32()]);
+        inner.draw_bg.set_uniform(cx, id!(yuv_biplanar), &[0.0]);
+        inner.draw_bg.set_uniform(cx, id!(yuv_sample_mode), &[0.0]);
+        inner.draw_bg.set_uniform(cx, id!(yuv_full_range), &[0.0]);
+        inner.draw_bg.set_uniform(cx, id!(yuv_rotation_steps), &[0.0]);
+        inner.draw_bg.set_uniform(cx, id!(video_rgba_2d), &[0.0]);
+        inner.rgba_gl_2d = false;
+        inner.redraw(cx); Ok(())
+    }
+
+    /// Clear a live surface at a stream/lifecycle boundary without retaining an old picture.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn clear_live_frame(&self, cx: &mut Cx) {
+        use makepad_platform::video_decode::yuv::{YuvPlaneData, YuvLayout, YuvColorMatrix};
+        let _ = self.present_live_yuv(cx, YuvPlaneData {width:2,height:2,y:vec![16;4],u:vec![128],v:vec![128],
+            layout:YuvLayout::I420,matrix:YuvColorMatrix::BT709,y_stride:0,u_stride:0,v_stride:0});
+    }
     /// Prepares the video for playback. Does not start playback or update the video texture.
     ///
     /// Once playback is prepared, [`begin_playback`] can be called to start the actual playback.
@@ -943,6 +1025,7 @@ pub enum VideoAction {
 
 impl Widget for Video {
     fn draw_walk(&mut self, cx: &mut Cx2d, _scope: &mut Scope, walk: Walk) -> DrawStep {
+        self.draw_bg.set_uniform(cx, id!(live_contain), &[if self.live_presentation {1.0} else {0.0}]);
         if let Some(texture) = &self.thumbnail_texture {
             self.draw_bg.draw_vars.set_texture(1, texture);
         }
@@ -1164,7 +1247,7 @@ impl Widget for Video {
             _ => (),
         }
 
-        self.handle_gestures(cx, event, scope);
+        if !self.live_presentation { self.handle_gestures(cx, event, scope); }
         self.handle_activity_events(cx, event);
         self.handle_errors(cx, event);
     }
@@ -1251,7 +1334,7 @@ impl Video {
     }
 
     fn infer_source_mode(&self) -> VideoSourceMode {
-        if self.has_session_source {
+        if self.live_yuv || self.has_session_source {
             return VideoSourceMode::YuvPlanes;
         }
         if self.in_memory_source.is_some() {
@@ -1289,17 +1372,13 @@ impl Video {
 
     fn init_video_texture(&mut self, cx: &mut Cx) {
         self.id = LiveId::unique();
+        self.live_presentation = self.live_input;
+        self.live_yuv = self.live_input && !cfg!(target_arch = "wasm32");
         self.ensure_primary_texture(cx);
 
-        #[cfg(target_os = "android")]
-        if self.source_mode == VideoSourceMode::ExternalTexture {
-            match cx.os_type() {
-                OsType::Android(params) if params.is_emulator => {
-                    panic!("Video Widget is currently only supported on real devices. (unreliable support for external textures on some emulators hosts)");
-                }
-                _ => {}
-            }
-        }
+        // Backend failures are reported by preparation. Do not reject an entire
+        // widget on emulator startup: live CPU-plane presentation needs no
+        // delegated external-texture video player.
 
         self.should_prepare_playback = self.autoplay;
         self.maybe_prepare_playback(cx);
@@ -1700,6 +1779,8 @@ impl Video {
                 VideoDataSource::Camera { .. } => VideoSourceMode::YuvPlanes,
                 _ => VideoSourceMode::ExternalTexture,
             };
+            self.live_presentation = matches!(&source, VideoDataSource::Network {url} if url.starts_with("makepad-live:"));
+            self.live_yuv = false;
             self.source = source;
         } else {
             error!(
@@ -1750,6 +1831,7 @@ impl Video {
     }
 
     fn should_show_center_play(&self) -> bool {
+        if self.live_presentation { return false; }
         matches!(
             self.playback_state,
             PlaybackState::Unprepared
@@ -2172,6 +2254,11 @@ impl Video {
 /// [`Dependency`]: A resource handle (loaded with `crate_resource("self:path/to/video.mp4")`).
 ///
 /// [`Network`]: The URL of a video file, it can be any regular HTTP download or HLS, DASH, RTMP, RTSP.
+/// On the web, `makepad-live:<channel>` receives `makepad-video-frame` events on
+/// the renderer canvas. Event detail contains `channel`, monotonic `generation`,
+/// and a `VideoFrame` (or null to clear). The adapter clones one pending frame;
+/// the caller still owns and must close the supplied frame. `accepted` reports
+/// transfer, and `makepad-video-presented` reports the subsequent canvas pass.
 ///
 /// [`Filesystem`]: The path to a video file on the local filesystem. This requires runtime-approved permissions for reading storage.
 #[derive(Clone, Debug, Script, ScriptHook)]

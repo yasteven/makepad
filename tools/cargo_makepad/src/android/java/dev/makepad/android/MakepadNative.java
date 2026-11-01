@@ -4,6 +4,8 @@ import android.view.Surface;
 import android.view.MotionEvent;
 
 public class MakepadNative {
+    public static native void onDeviceServiceResult(long requestId, int operation, boolean success, String payload);
+
     // belongs to MakepadActivity class
     public native static void activityOnCreate(Object activity);
     public native static void activityOnStart();

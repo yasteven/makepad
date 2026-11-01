@@ -382,7 +382,7 @@ impl WaylandCx {
                     // the bound, next-frame and draw events run again at the
                     // timer's cadence (presents stay gated per window in
                     // handle_repaint) and a pending grab is always served.
-                    let since = *state.frame_gate_since.get_or_insert_with(crate::sols_browser_time::Instant::now);
+                    let since = *state.frame_gate_since.get_or_insert_with(crate::browser_time::Instant::now);
                     let grab_pending = self.cx.borrow().screenshot_requests.len() > 0;
                     if since.elapsed() < FRAME_GATE_STALL_LIMIT && !grab_pending {
                         return EventFlow::Wait;
@@ -392,7 +392,7 @@ impl WaylandCx {
                 }
                 // What this cycle costs the CPU tells the pacer whether OpenGL frames
                 // are slow enough to be started ahead of their callback.
-                let cycle_started = crate::sols_browser_time::Instant::now();
+                let cycle_started = crate::browser_time::Instant::now();
                 state.presents_this_cycle = 0;
                 if let Some(opengl_cx) = self.cx.borrow().os.opengl_cx.as_ref() {
                     opengl_cx.swap_wait.set(std::time::Duration::ZERO);

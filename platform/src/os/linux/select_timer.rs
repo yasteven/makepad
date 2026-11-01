@@ -3,7 +3,7 @@ use std::mem;
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::OnceLock;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Instant;
 
 use self::super::libc_sys;
 

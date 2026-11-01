@@ -89,7 +89,7 @@ use {
     std::rc::Rc,
     std::sync::mpsc,
     //std::os::raw::{c_void},
-    crate::sols_browser_time::Instant,
+    crate::browser_time::Instant,
 };
 
 const ANDROID_XR_BUFFER_SCALE_MIN: f32 = 0.75;
@@ -2543,6 +2543,16 @@ impl Cx {
                             comp_start_utf16,
                             comp_end_utf16,
                         );
+                    }
+                }
+                CxOsOp::AndroidDeviceService { request_id, operation, text } => {
+                    if let Err(error) = unsafe { android_jni::to_java_device_service(request_id, operation, &text) } {
+                        crate::android_services::release_request();
+                        if operation == 2 {
+                            self.action(crate::android_services::NetworkSnapshotResult { request_id, result: Err(error) });
+                        } else {
+                            self.action(crate::android_services::ClipboardResult { request_id, result: Err(error) });
+                        }
                     }
                 }
                 CxOsOp::CopyToClipboard(content) => unsafe {

@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Duration;
+use crate::browser_time::Instant;
 
 /// Inactive windows own their WSI resources, while drawing uses the selected
 /// window's resources in CxVulkan. Geometry, textures and pipelines stay shared.
@@ -1939,7 +1939,7 @@ mod uevent {
     use std::os::raw::c_int;
 use std::os::raw::c_uint;
 use std::os::raw::c_void;
-use crate::sols_browser_time::Duration;
+use crate::browser_time::Duration;
 
     #[repr(C)]
     struct SockaddrNl {

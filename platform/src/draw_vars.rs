@@ -53,16 +53,16 @@ pub struct DrawVars {
     pub texture_slots: [Option<Texture>; DRAW_CALL_TEXTURE_SLOTS],
     #[rust]
     pub uniform_buffer_slots: [Option<UniformBuffer>; DRAW_CALL_UNIFORM_BUFFER_SLOTS],
-    // SOLS: wasm32's 17 texture handles + 2 uniform-buffer handles occupy
+    // wasm32's 17 texture handles + 2 uniform-buffer handles occupy
     // 76 bytes. Put the four-byte alignment gap BEFORE the instance array,
     // never after it: as_slice() spans into the enclosing shader's fields.
     #[rust]
-    pub sols_instance_align_pad: [u32; cfg!(target_arch = "wasm32") as usize],
+    pub instance_align_pad: [u32; cfg!(target_arch = "wasm32") as usize],
     #[rust([0f32; DRAW_CALL_DYN_INSTANCES])]
     pub dyn_instances: [f32; DRAW_CALL_DYN_INSTANCES],
 }
 
-// SOLS: fail the build if instance reads would include struct tail padding.
+// Fail the build if instance reads would include struct tail padding.
 const _: () = assert!(
     std::mem::offset_of!(DrawVars, dyn_instances)
         + std::mem::size_of::<[f32; DRAW_CALL_DYN_INSTANCES]>()

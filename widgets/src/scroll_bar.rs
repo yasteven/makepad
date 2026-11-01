@@ -1011,10 +1011,10 @@ impl ScrollBar {
             }
 
             match event.hits(cx, self.draw_bg.area()) {
-                // TRADE_INPUT_KEYBOARD_V1: clicking the actual bar selects its keyboard target.
+                // INPUT_KEYBOARD_V1: clicking the actual bar selects its keyboard target.
                 Hit::KeyDown(key) => {
                     if !key.modifiers.control && !key.modifiers.alt && !key.modifiers.logo {
-                        if let Some(position) = crate::trade_input_keyboard::scroll(
+                        if let Some(position) = crate::input_keyboard::scroll(
                             self.scroll_pos, self.view_total, self.view_visible,
                             matches!(self.axis, ScrollAxis::Horizontal), &format!("{:?}", key.key_code),
                         ) {

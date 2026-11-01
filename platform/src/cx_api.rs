@@ -359,6 +359,8 @@ pub enum CxOsOp {
         keyboard_shift: f64,
     },
     HideClipboardActions,
+    #[cfg(target_os = "android")]
+    AndroidDeviceService { request_id: u64, operation: i32, text: String },
     CopyToClipboard(String),
     SetPrimarySelection(String),
     ShowSelectionHandles {
@@ -526,6 +528,8 @@ impl std::fmt::Debug for CxOsOp {
             Self::UpdateMacosMenu(..) => write!(f, "UpdateMacosMenu"),
             Self::ShowClipboardActions { .. } => write!(f, "ShowClipboardActions"),
             Self::HideClipboardActions => write!(f, "HideClipboardActions"),
+            #[cfg(target_os = "android")]
+            Self::AndroidDeviceService { .. } => write!(f, "AndroidDeviceService"),
             Self::CopyToClipboard(..) => write!(f, "CopyToClipboard"),
             Self::SetPrimarySelection(..) => write!(f, "SetPrimarySelection"),
             Self::ShowSelectionHandles { .. } => write!(f, "ShowSelectionHandles"),

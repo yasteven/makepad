@@ -121,84 +121,89 @@ script_mod! {
 
         pixel: fn() -> vec4 {
             let sdf = Sdf2d.viewport(self.pos * 24.0)
-            match self.shape {
-                CursorShape.Hidden => { return vec4(0.0) }
-                CursorShape.Default => { return self.arrow() }
-                CursorShape.Arrow => { return self.arrow() }
-                CursorShape.Hand => { return self.hand(0.0) }
-                CursorShape.Grab => { return self.hand(1.0) }
-                CursorShape.Grabbing => { return self.hand(2.0) }
-                CursorShape.Text => {
-                    sdf.move_to(8.0, 3.0)
-                    sdf.line_to(16.0, 3.0)
-                    sdf.move_to(12.0, 3.0)
-                    sdf.line_to(12.0, 21.0)
-                    sdf.move_to(8.0, 21.0)
-                    sdf.line_to(16.0, 21.0)
-                }
-                CursorShape.Crosshair => {
-                    sdf.move_to(12.0, 2.0)
-                    sdf.line_to(12.0, 22.0)
-                    sdf.move_to(2.0, 12.0)
-                    sdf.line_to(22.0, 12.0)
-                }
-                CursorShape.Move => {
-                    return self.resize(vec2(1.0, 0.0), 1.0, 0.0)
-                        + self.resize(vec2(0.0, 1.0), 1.0, 0.0)
-                            * (1.0 - self.resize(vec2(1.0, 0.0), 1.0, 0.0).w)
-                }
-                CursorShape.Wait => {
-                    var path = vec2(1e20, 0.0)
-                    path = self.path_edge(path, vec2(6.0, 3.0), vec2(18.0, 3.0))
-                    path = self.path_edge(path, vec2(18.0, 3.0), vec2(18.0, 6.0))
-                    path = self.path_edge(path, vec2(18.0, 6.0), vec2(13.0, 12.0))
-                    path = self.path_edge(path, vec2(13.0, 12.0), vec2(18.0, 18.0))
-                    path = self.path_edge(path, vec2(18.0, 18.0), vec2(18.0, 21.0))
-                    path = self.path_edge(path, vec2(18.0, 21.0), vec2(6.0, 21.0))
-                    path = self.path_edge(path, vec2(6.0, 21.0), vec2(6.0, 18.0))
-                    path = self.path_edge(path, vec2(6.0, 18.0), vec2(11.0, 12.0))
-                    path = self.path_edge(path, vec2(11.0, 12.0), vec2(6.0, 6.0))
-                    path = self.path_edge(path, vec2(6.0, 6.0), vec2(6.0, 3.0))
-                    return self.path_pixel(path)
-                }
-                CursorShape.NotAllowed => {
-                    sdf.circle(12.0, 12.0, 8.0)
-                    sdf.move_to(6.5, 6.5)
-                    sdf.line_to(17.5, 17.5)
-                }
-                CursorShape.Help => {
-                    sdf.move_to(15.0, 13.0)
-                    sdf.line_to(16.0, 11.0)
-                    sdf.line_to(20.0, 11.0)
-                    sdf.line_to(22.0, 13.0)
-                    sdf.line_to(21.0, 15.0)
-                    sdf.line_to(18.0, 17.0)
-                    sdf.line_to(18.0, 18.0)
-                    sdf.move_to(18.0, 20.5)
-                    sdf.line_to(18.0, 21.0)
-                    sdf.stroke_keep(self.border_color, 3.5)
-                    sdf.stroke(self.color, 1.75)
-                    return sdf.result + self.arrow() * (1.0 - sdf.result.w)
-                }
-                CursorShape.NResize => { return self.resize(vec2(0.0, -1.0), 0.0, 0.0) }
-                CursorShape.NeResize => { return self.resize(vec2(0.707107, -0.707107), 0.0, 0.0) }
-                CursorShape.EResize => { return self.resize(vec2(1.0, 0.0), 0.0, 0.0) }
-                CursorShape.SeResize => { return self.resize(vec2(0.707107, 0.707107), 0.0, 0.0) }
-                CursorShape.SResize => { return self.resize(vec2(0.0, 1.0), 0.0, 0.0) }
-                CursorShape.SwResize => { return self.resize(vec2(-0.707107, 0.707107), 0.0, 0.0) }
-                CursorShape.WResize => { return self.resize(vec2(-1.0, 0.0), 0.0, 0.0) }
-                CursorShape.NwResize => { return self.resize(vec2(-0.707107, -0.707107), 0.0, 0.0) }
-                CursorShape.NsResize => { return self.resize(vec2(0.0, 1.0), 1.0, 0.0) }
-                CursorShape.NeswResize => { return self.resize(vec2(0.707107, -0.707107), 1.0, 0.0) }
-                CursorShape.EwResize => { return self.resize(vec2(1.0, 0.0), 1.0, 0.0) }
-                CursorShape.NwseResize => { return self.resize(vec2(0.707107, 0.707107), 1.0, 0.0) }
-                CursorShape.ColResize => { return self.resize(vec2(1.0, 0.0), 1.0, 1.0) }
-                CursorShape.RowResize => { return self.resize(vec2(0.0, 1.0), 1.0, 1.0) }
-                _ => { return self.arrow() }
+            // Keep dispatch shallow: nested match lowering can exhaust GLES shader parsers.
+            if self.shape == CursorShape.Hidden { return vec4(0.0) }
+            if self.shape == CursorShape.Default { return self.arrow() }
+            if self.shape == CursorShape.Arrow { return self.arrow() }
+            if self.shape == CursorShape.Hand { return self.hand(0.0) }
+            if self.shape == CursorShape.Grab { return self.hand(1.0) }
+            if self.shape == CursorShape.Grabbing { return self.hand(2.0) }
+            if self.shape == CursorShape.Text {
+                sdf.move_to(8.0, 3.0)
+                sdf.line_to(16.0, 3.0)
+                sdf.move_to(12.0, 3.0)
+                sdf.line_to(12.0, 21.0)
+                sdf.move_to(8.0, 21.0)
+                sdf.line_to(16.0, 21.0)
+                sdf.stroke_keep(self.border_color, 3.5)
+                sdf.stroke(self.color, 1.75)
+                return sdf.result
             }
-            sdf.stroke_keep(self.border_color, 3.5)
-            sdf.stroke(self.color, 1.75)
-            return sdf.result
+            if self.shape == CursorShape.Crosshair {
+                sdf.move_to(12.0, 2.0)
+                sdf.line_to(12.0, 22.0)
+                sdf.move_to(2.0, 12.0)
+                sdf.line_to(22.0, 12.0)
+                sdf.stroke_keep(self.border_color, 3.5)
+                sdf.stroke(self.color, 1.75)
+                return sdf.result
+            }
+            if self.shape == CursorShape.Move {
+                return self.resize(vec2(1.0, 0.0), 1.0, 0.0)
+                    + self.resize(vec2(0.0, 1.0), 1.0, 0.0)
+                        * (1.0 - self.resize(vec2(1.0, 0.0), 1.0, 0.0).w)
+            }
+            if self.shape == CursorShape.Wait {
+                var path = vec2(1e20, 0.0)
+                path = self.path_edge(path, vec2(6.0, 3.0), vec2(18.0, 3.0))
+                path = self.path_edge(path, vec2(18.0, 3.0), vec2(18.0, 6.0))
+                path = self.path_edge(path, vec2(18.0, 6.0), vec2(13.0, 12.0))
+                path = self.path_edge(path, vec2(13.0, 12.0), vec2(18.0, 18.0))
+                path = self.path_edge(path, vec2(18.0, 18.0), vec2(18.0, 21.0))
+                path = self.path_edge(path, vec2(18.0, 21.0), vec2(6.0, 21.0))
+                path = self.path_edge(path, vec2(6.0, 21.0), vec2(6.0, 18.0))
+                path = self.path_edge(path, vec2(6.0, 18.0), vec2(11.0, 12.0))
+                path = self.path_edge(path, vec2(11.0, 12.0), vec2(6.0, 6.0))
+                path = self.path_edge(path, vec2(6.0, 6.0), vec2(6.0, 3.0))
+                return self.path_pixel(path)
+            }
+            if self.shape == CursorShape.NotAllowed {
+                sdf.circle(12.0, 12.0, 8.0)
+                sdf.move_to(6.5, 6.5)
+                sdf.line_to(17.5, 17.5)
+                sdf.stroke_keep(self.border_color, 3.5)
+                sdf.stroke(self.color, 1.75)
+                return sdf.result
+            }
+            if self.shape == CursorShape.Help {
+                sdf.move_to(15.0, 13.0)
+                sdf.line_to(16.0, 11.0)
+                sdf.line_to(20.0, 11.0)
+                sdf.line_to(22.0, 13.0)
+                sdf.line_to(21.0, 15.0)
+                sdf.line_to(18.0, 17.0)
+                sdf.line_to(18.0, 18.0)
+                sdf.move_to(18.0, 20.5)
+                sdf.line_to(18.0, 21.0)
+                sdf.stroke_keep(self.border_color, 3.5)
+                sdf.stroke(self.color, 1.75)
+                return sdf.result + self.arrow() * (1.0 - sdf.result.w)
+            }
+            if self.shape == CursorShape.NResize { return self.resize(vec2(0.0, -1.0), 0.0, 0.0) }
+            if self.shape == CursorShape.NeResize { return self.resize(vec2(0.707107, -0.707107), 0.0, 0.0) }
+            if self.shape == CursorShape.EResize { return self.resize(vec2(1.0, 0.0), 0.0, 0.0) }
+            if self.shape == CursorShape.SeResize { return self.resize(vec2(0.707107, 0.707107), 0.0, 0.0) }
+            if self.shape == CursorShape.SResize { return self.resize(vec2(0.0, 1.0), 0.0, 0.0) }
+            if self.shape == CursorShape.SwResize { return self.resize(vec2(-0.707107, 0.707107), 0.0, 0.0) }
+            if self.shape == CursorShape.WResize { return self.resize(vec2(-1.0, 0.0), 0.0, 0.0) }
+            if self.shape == CursorShape.NwResize { return self.resize(vec2(-0.707107, -0.707107), 0.0, 0.0) }
+            if self.shape == CursorShape.NsResize { return self.resize(vec2(0.0, 1.0), 1.0, 0.0) }
+            if self.shape == CursorShape.NeswResize { return self.resize(vec2(0.707107, -0.707107), 1.0, 0.0) }
+            if self.shape == CursorShape.EwResize { return self.resize(vec2(1.0, 0.0), 1.0, 0.0) }
+            if self.shape == CursorShape.NwseResize { return self.resize(vec2(0.707107, 0.707107), 1.0, 0.0) }
+            if self.shape == CursorShape.ColResize { return self.resize(vec2(1.0, 0.0), 1.0, 1.0) }
+            if self.shape == CursorShape.RowResize { return self.resize(vec2(0.0, 1.0), 1.0, 1.0) }
+            return self.arrow()
         }
     }
 }

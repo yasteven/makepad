@@ -2,7 +2,7 @@
 //! raw NV12 frames out — the realtime sibling of the file-based
 //! [`crate::VideoFileDecoder`]. See [`crate::stream_encoder`] for the
 //! encoder half and the backend notes (`VTDecompressionSession` on macOS,
-//! an H.264 decoder MFT on Windows).
+//! an H.264 decoder MFT on Windows, MediaCodec/ImageReader on Android).
 
 use crate::VideoFileError;
 pub use crate::stream_encoder::StreamVideoCodec;
@@ -30,23 +30,25 @@ impl DecodedFrame {
 use crate::apple_stream_decoder::AppleStreamDecoder as OsStreamDecoder;
 #[cfg(target_os = "windows")]
 use crate::windows_stream_decoder::WindowsStreamDecoder as OsStreamDecoder;
+#[cfg(target_os = "android")]
+use crate::android_stream_decoder::AndroidStreamDecoder as OsStreamDecoder;
 
-#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "android")))]
 const UNSUPPORTED: &str = "hardware video stream decode is not implemented on this platform yet";
 
 pub struct VideoStreamDecoder {
-    #[cfg(any(target_vendor = "apple", target_os = "windows"))]
+    #[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "android"))]
     os: OsStreamDecoder,
 }
 
 impl VideoStreamDecoder {
     pub fn new(codec: StreamVideoCodec) -> Result<Self, VideoFileError> {
-        #[cfg(any(target_vendor = "apple", target_os = "windows"))]
+        #[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "android"))]
         {
             let os = OsStreamDecoder::new(codec)?;
             return Ok(Self { os });
         }
-        #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+        #[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "android")))]
         {
             let _ = codec;
             return Err(VideoFileError::new(UNSUPPORTED));
@@ -61,9 +63,9 @@ impl VideoStreamDecoder {
     /// only packets or a mid-GOP decoder (re)initialization boundary
     /// legitimately produce 0.
     pub fn push_packet(&mut self, annex_b: &[u8], pts_100ns: i64) -> Result<Vec<DecodedFrame>, VideoFileError> {
-        #[cfg(any(target_vendor = "apple", target_os = "windows"))]
+        #[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "android"))]
         return self.os.push_packet(annex_b, pts_100ns);
-        #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+        #[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "android")))]
         {
             let _ = (annex_b, pts_100ns);
             return Err(VideoFileError::new(UNSUPPORTED));
@@ -71,13 +73,14 @@ impl VideoStreamDecoder {
     }
 
     /// Drains any frames still buffered inside the decoder (call at stream
-    /// end; the synchronous push/flush-per-packet design used here means
+    /// end; Android also uses this as a nonblocking ImageReader poll. The
+    /// synchronous push/flush-per-packet design on other backends means
     /// this is normally empty, but it is not a promise every backend keeps
     /// zero-latency).
     pub fn flush(&mut self) -> Result<Vec<DecodedFrame>, VideoFileError> {
-        #[cfg(any(target_vendor = "apple", target_os = "windows"))]
+        #[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "android"))]
         return self.os.flush();
-        #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+        #[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "android")))]
         return Ok(Vec::new());
     }
 }

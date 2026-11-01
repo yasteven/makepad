@@ -1,19 +1,18 @@
-## SOLS / Trade shared Makepad fork
+## Makepad framework fork
 
-This fork preserves the installed Makepad baseline and unifies the SOLS browser
-clock, glyph-atlas/resource and WASM instance-layout adaptations with Trade's
-slider/scrollbar keyboard policy and the WebGL GPU-completion repair.
-`sols_trade_source.txt` records the imported source and adapter fingerprints.
-Read ROBOT.md for the operator contract and TODOS.md for unfinished work.
+This fork combines browser clock, glyph-atlas/resource and WASM instance-layout
+repairs with slider/scrollbar keyboard control, WebGL GPU completion, native
+device services and bounded live video presentation. `fork_source.txt` records
+the original framework import and compatibility fingerprints.
+Read ROBOT.md for contribution rules and TODOS.md for framework priorities.
 
-Focused validation (Node + rustc, without an application or WASM build):
+Focused validation from this repository root (Node + rustc):
 
 ```sh
-cd "$HOME/1tb/see/1-c0d3/rust/makepad" &&
-node --test --test-reporter=tap platform/src/os/web/web_completion.test.mjs platform/src/os/web/sols_trade_compat.test.mjs
+node --test --test-reporter=tap platform/src/os/web/web_completion.test.mjs platform/src/os/web/fork_compat.test.mjs
 ```
 
-Native/helper validation is separate from browser integration and soak testing.
+Native/helper validation is separate from browser integration and device testing.
 
 # Makepad
 

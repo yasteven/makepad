@@ -1068,8 +1068,8 @@ impl WindowsVideoPlayer {
                     let tmp = std::env::temp_dir().join(format!(
                         "makepad_me_video_{}_{}.{ext}",
                         video_id.0,
-                        crate::sols_browser_time::SystemTime::now()
-                            .duration_since(crate::sols_browser_time::UNIX_EPOCH)
+                        crate::browser_time::SystemTime::now()
+                            .duration_since(crate::browser_time::UNIX_EPOCH)
                             .map(|d| d.as_millis())
                             .unwrap_or(0),
                     ));

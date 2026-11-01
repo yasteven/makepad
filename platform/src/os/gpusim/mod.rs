@@ -21,7 +21,7 @@ use crate::{
 };
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Instant;
 
 pub(crate) fn wake_ui_event_loop() {
     // Gpusim bounded loops do not sleep in an OS wait primitive.

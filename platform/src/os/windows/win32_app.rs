@@ -256,7 +256,7 @@ unsafe fn msg_wait_for_beat_or_input(handles: &[HANDLE], timeout_ms: u32) -> u32
 /// a small count/time budget, so a flood of high-rate input can never starve the
 /// paint beat. Returns false if a dispatched message asked the app to exit.
 unsafe fn drain_messages() -> bool {
-    let drain_start = crate::sols_browser_time::Instant::now();
+    let drain_start = crate::browser_time::Instant::now();
     let mut drain_budget = 32;
     loop {
         let mut msg = std::mem::MaybeUninit::uninit();

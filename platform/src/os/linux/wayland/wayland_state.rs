@@ -437,7 +437,7 @@ pub(crate) struct WaylandState {
     pub(crate) presents_this_cycle: usize,
     /// When every surface became held back by the compositor (see the Paint
     /// arm in `linux_wayland.rs`); `None` while at least one can present.
-    pub(crate) frame_gate_since: Option<crate::sols_browser_time::Instant>,
+    pub(crate) frame_gate_since: Option<crate::browser_time::Instant>,
     pub(crate) event_flow: EventFlow,
     pub(crate) event_loop_running: bool,
 
@@ -2426,7 +2426,7 @@ impl WaylandState {
     /// Presents a window may have awaiting their callbacks right now.
     fn frames_in_flight_allowed(&self) -> usize {
         self.frame_pacer
-            .frames_in_flight(self.has_fifo_v1, crate::sols_browser_time::Instant::now())
+            .frames_in_flight(self.has_fifo_v1, crate::browser_time::Instant::now())
             .max(1)
     }
 
@@ -2448,7 +2448,7 @@ impl WaylandState {
     /// One frame callback fired: the compositor consumed one present of the window.
     pub(crate) fn frame_callback_done(&mut self, window_id: WindowId, compositor_ms: u32) {
         self.frame_pacer
-            .callback_arrived(crate::sols_browser_time::Instant::now(), compositor_ms);
+            .callback_arrived(crate::browser_time::Instant::now(), compositor_ms);
         if let Some((_, count)) = self.frame_callbacks_pending.iter_mut().find(|(id, _)| *id == window_id) {
             *count = count.saturating_sub(1);
         }

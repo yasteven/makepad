@@ -21,8 +21,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::ptr;
-use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Duration;
+use crate::browser_time::Instant;
 
 pub struct Child {
     pid: i32,

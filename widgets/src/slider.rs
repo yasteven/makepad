@@ -1508,7 +1508,7 @@ impl Slider {
     fn to_external(&self) -> f64 {
         let val = self.relative_value * (self.max - self.min);
         if self.step != 0.0 {
-            return crate::trade_input_keyboard::quantized(val, self.step) + self.min;
+            return crate::input_keyboard::quantized(val, self.step) + self.min;
         } else {
             val + self.min
         }
@@ -1628,12 +1628,12 @@ impl Widget for Slider {
         let uid = self.widget_uid();
         self.animator_handle_event(cx, event);
 
-        // TRADE_INPUT_KEYBOARD_V1: a focused slider is a permanent keyboard control.
+        // INPUT_KEYBOARD_V1: a focused slider is a permanent keyboard control.
         // Preserve its numeric editor; intercept navigation before it moves the caret.
         if self.text_input.key_focus(cx) && !self.animator_in_state(cx, ids!(disabled.on)) {
             if let Event::KeyDown(key) = event {
                 if !key.modifiers.control && !key.modifiers.alt && !key.modifiers.logo {
-                    if let Some(value) = crate::trade_input_keyboard::slider(
+                    if let Some(value) = crate::input_keyboard::slider(
                         self.to_external(), self.min, self.max, self.step, &format!("{:?}", key.key_code),
                     ) {
                         self.set_internal(value);

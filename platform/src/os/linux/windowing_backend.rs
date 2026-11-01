@@ -7,7 +7,7 @@ use crate::{cx::Cx, makepad_live_id::LiveId, opengl_cx::OpenglCx, CxOsApi, OpenU
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use crate::sols_browser_time::Instant;
+use crate::browser_time::Instant;
 // Import OpenglCx from x11 for the unified type
 
 /// Scroll distance in logical pixels for one wheel detent, roughly three lines of

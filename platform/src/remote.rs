@@ -78,8 +78,8 @@ mod imp {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
     use std::sync::{Arc, Mutex, OnceLock};
-    use crate::sols_browser_time::Duration;
-use crate::sols_browser_time::Instant;
+    use crate::browser_time::Duration;
+use crate::browser_time::Instant;
 
     // ------------------------------------------------------------------
     // global state (the HTTP threads' only view of the app)
